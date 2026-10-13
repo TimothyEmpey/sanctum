@@ -44,9 +44,13 @@ export type TrendSnapshot = {
   note: string;
 };
 
-/** Minimum stop under the entry. A tighter 5-minute wick is widened to this. */
-const STOP_PCT = 0.01;
-const TARGET_R = 2;
+/**
+ * Minimum stop under the entry. A recent SPY day travels about 0.5% to 0.9%,
+ * so a 1% stop and a 2% target sit outside a normal session. 0.25% is about
+ * $2 on a $780 print, wider than one noisy 5-minute bar and inside the day.
+ */
+const STOP_PCT = 0.0025;
+const TARGET_R = 1.5;
 const LIMIT_OFFSET = 0.02;
 /** A dip within 0.5% of VWAP still counts. The old 0.04% tag blocked ordinary days. */
 const VWAP_BAND = 0.005;
@@ -110,9 +114,9 @@ function empty(note: string, extra: Partial<TrendSnapshot> = {}): TrendSnapshot 
 
 /**
  * Long-only trend pullback. One SPY buy a day while VWAP is rising.
- * The stop is at least 1% under the entry, or beyond the dip if that is
- * farther. The target is twice the stop distance, about 2% when the stop
- * is at the minimum. A wide dip is not rejected. The risk engine buys
+ * The stop is at least 0.25% under the entry, or beyond the dip if that is
+ * farther. The target is 1.5 times the stop distance, about 0.4% when the
+ * stop is at the minimum. A wide dip is not rejected. The risk engine buys
  * fewer shares instead.
  */
 export function evaluateTrendPullback(context: TrendContext): TrendSnapshot {
@@ -160,7 +164,7 @@ export function evaluateTrendPullback(context: TrendContext): TrendSnapshot {
     vwap,
     vwapSlope,
     standDown: null,
-    note: "Trend pullback. Target is twice the stop distance.",
+    note: "Trend pullback. Target is 1.5 times the stop distance.",
     proposal: {
       symbol: "SPY",
       side: "LONG",
@@ -169,7 +173,7 @@ export function evaluateTrendPullback(context: TrendContext): TrendSnapshot {
       targetPrice: roundPrice(entry + stopDistance * TARGET_R),
       setup: "TREND_PULLBACK",
       strategy: STRATEGY_ID,
-      reason: "5-minute dip while price holds a rising VWAP. Stop is at least 1% under the entry and the target is twice that risk.",
+      reason: "5-minute dip while price holds a rising VWAP. Stop is at least 0.25% under the entry and the target is 1.5 times that risk.",
       signalBarTs: latest.ts,
     },
   };

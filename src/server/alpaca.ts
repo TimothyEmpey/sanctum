@@ -159,6 +159,13 @@ export function replacePaperStop(orderId: string, stopPrice: number) {
   });
 }
 
+export function replacePaperLimit(orderId: string, limitPrice: number) {
+  return alpacaFetch<AlpacaOrder>(`/v2/orders/${encodeURIComponent(orderId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ limit_price: limitPrice.toFixed(2) }),
+  });
+}
+
 export function sellPaperShares(quantity: number) {
   assertTradableSymbol(TRADABLE_SYMBOL);
   if (!Number.isInteger(quantity) || quantity < 1) {

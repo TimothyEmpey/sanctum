@@ -46,15 +46,15 @@ function at(hour: number, minute: number, bars: Bar[], overrides: Partial<Parame
 }
 
 describe("SPY trend pullback", () => {
-  it("buys a dip and places the stop at least 1% under the entry", () => {
+  it("buys a dip and places the stop at least 0.25% under the entry", () => {
     const decision = at(10, 0, [...climb(), ...pullback(9 * 60 + 55, 100.4, 100.2, 100.55)]);
     const proposal = decision.proposal;
     expect(proposal?.side).toBe("LONG");
     expect(proposal?.setup).toBe("TREND_PULLBACK");
     expect(proposal?.strategy).toBe("spy-trend-pullback-2026");
-    expect(proposal!.stopPrice).toBeLessThanOrEqual(proposal!.entryPrice * 0.99);
+    expect(proposal!.stopPrice).toBeLessThanOrEqual(proposal!.entryPrice * 0.9975);
     const risk = proposal!.entryPrice - proposal!.stopPrice;
-    expect(proposal!.targetPrice).toBeCloseTo(proposal!.entryPrice + risk * 2, 2);
+    expect(proposal!.targetPrice).toBeCloseTo(proposal!.entryPrice + risk * 1.5, 2);
     expect(proposal?.signalBarTs).toBe(etInstant(DATE, 9, 59).getTime());
   });
 
@@ -72,7 +72,7 @@ describe("SPY trend pullback", () => {
     expect(proposal).not.toBeNull();
     expect(proposal!.stopPrice).toBeLessThanOrEqual(98.39);
     const risk = proposal!.entryPrice - proposal!.stopPrice;
-    expect(proposal!.targetPrice).toBeCloseTo(proposal!.entryPrice + risk * 2, 2);
+    expect(proposal!.targetPrice).toBeCloseTo(proposal!.entryPrice + risk * 1.5, 2);
   });
 
   it("does not take a second trade the same day", () => {

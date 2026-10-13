@@ -8,7 +8,7 @@ This is trading software, not investment advice. You can lose money.
 
 ## Playbook
 
-Trend pullback on SPY. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. One buy a day. The stop is at least 1% under the entry, or beyond the dip if the dip is deeper. The target is twice that distance, about 2% when the stop is at the minimum. A deep dip is not skipped. The risk engine buys fewer shares. Shorts stay off. Flat before the close.
+Trend pullback on SPY. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. One buy a day. The stop is at least 0.25% under the entry, or beyond the dip if the dip is deeper. The target is 1.5 times that distance, about 0.4% when the stop is at the minimum. Recent sessions have ranged about 0.5% to 0.9%, so the target sits inside a normal day. A deep dip is not skipped. The risk engine buys fewer shares. Shorts stay off. Flat before the close.
 
 The account limits are 2% risk per trade, 5% daily loss, 5% weekly loss, 5% drawdown from peak, 2 open positions, 4% combined open risk, and 1 trade a day. Stops are required before entry and cannot be widened. Size is `floor(equity × 2% / stop distance)`, then cut to cash. After a loss, the next buy is capped at that losing size.
 

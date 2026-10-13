@@ -76,7 +76,7 @@ export default async function RiskPage() {
       <Card>
         <CardTitle>Playbook</CardTitle>
         <p className="mt-3 text-sm leading-6">
-          The playbook is a long-only trend pullback. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. That is the one buy for the day. The stop is at least 1% under the entry, or past the dip if the dip is deeper, and the target is twice that distance. A wide bar is not skipped. Shorts stay off. The position is flat before the close. The model writes a journal line after the fact. It does not choose the order.
+          The playbook is a long-only trend pullback. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. That is the one buy for the day. The stop is at least 0.25% under the entry, or past the dip if the dip is deeper, and the target is 1.5 times that distance. On a normal SPY day that target is a few dollars, not a 2% run. A wide bar is not skipped. Shorts stay off. The position is flat before the close. The model writes a journal line after the fact. It does not choose the order.
         </p>
         <ul className="mt-4 space-y-2 text-sm">
           {rules.map((rule) => (

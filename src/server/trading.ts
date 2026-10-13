@@ -597,7 +597,7 @@ async function reconcileAlpaca(accountId: string, now: Date) {
       const targetLeg = remote.legs?.find((leg) => leg.type === "limit" && leg.side === "sell");
       const stop = roundPrice(Number(stopLeg?.stop_price ?? order.stopPrice));
       const risk = Math.max(0.01, fill - stop);
-      const target = roundPrice(Number(targetLeg?.limit_price ?? fill + risk * 2));
+      const target = roundPrice(Number(targetLeg?.limit_price ?? fill + risk * 1.5));
       const quantity = Number(remote.filled_qty ?? order.quantity);
       await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
