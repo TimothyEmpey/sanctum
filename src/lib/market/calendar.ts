@@ -17,6 +17,19 @@ export const NYSE_HOLIDAYS_2026 = new Set([
 /** Core session closes at 13:00 ET. */
 export const NYSE_EARLY_CLOSE_2026 = new Set(["2026-11-27", "2026-12-24"]);
 
+/** Start of the last half-hour. Gao, Han, Li, and Zhou enter here. */
+export function lastHalfHourStart(earlyClose: boolean) {
+  return earlyClose ? 12 * 60 + 30 : 15 * 60 + 30;
+}
+
+/** A missed 20-second poll can still send the 15:30 order. */
+export const LAST_HALF_GRACE_MINUTES = 5;
+
+/** Retired playbooks flatten here. The last-half-hour book holds until the cash close. */
+export function retiredFlattenMinute(earlyClose: boolean) {
+  return earlyClose ? 12 * 60 + 50 : 15 * 60 + 50;
+}
+
 export type SessionPhase =
   | "idle"
   | "preopen"
@@ -63,14 +76,16 @@ export function sessionClock(now: Date): SessionClock {
   }
 
   const signalStart = 9 * 60 + 50;
-  const entryEnd = earlyClose ? 12 * 60 + 30 : 15 * 60 + 30;
-  const manageEnd = earlyClose ? 12 * 60 + 50 : 15 * 60 + 50;
+  const lastHalf = lastHalfHourStart(earlyClose);
+  const entryEnd = lastHalf + LAST_HALF_GRACE_MINUTES;
   const sessionEnd = earlyClose ? 13 * 60 : 16 * 60;
+  const manageEnd = sessionEnd - 1;
 
   let phase: SessionPhase = "closed";
   if (z.minutes < 9 * 60 + 25) phase = "idle";
   else if (z.minutes < 9 * 60 + 30) phase = "preopen";
   else if (z.minutes < signalStart) phase = "opening_range";
+  else if (z.minutes < lastHalf) phase = "manage";
   else if (z.minutes < entryEnd) phase = "entry";
   else if (z.minutes < manageEnd) phase = "manage";
   else if (z.minutes < sessionEnd + 15) phase = "flatten";
@@ -94,7 +109,7 @@ export function sessionClock(now: Date): SessionClock {
     tradingDay,
     entryWindowOpen: phase === "entry",
     flattenDue: phase === "flatten",
-    label: labels[phase],
+    label: phase === "manage" && z.minutes < lastHalf ? "Waiting for the last half-hour" : labels[phase],
   };
 }
 

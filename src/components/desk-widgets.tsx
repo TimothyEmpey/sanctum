@@ -1,6 +1,7 @@
 import type { Desk } from "@/server/desk";
 import { formatPx, formatUsd } from "@/lib/market/time";
 import { Badge } from "@/components/ui/badge";
+import { MOMENTUM_SETUP } from "@/lib/strategy/intraday-momentum";
 import { Card, CardTitle } from "@/components/ui/card";
 
 export function DemoBanner() {
@@ -61,7 +62,11 @@ export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; 
             <PositionRow
               key={trade.id}
               symbol={trade.symbol}
-              detail={`${trade.side} ${trade.quantity} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · target ${formatPx(trade.targetPrice)}`}
+              detail={
+                trade.setup === MOMENTUM_SETUP
+                  ? `${trade.side} ${trade.quantity} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · exit at the cash close`
+                  : `${trade.side} ${trade.quantity} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · target ${formatPx(trade.targetPrice)}`
+              }
               value={formatUsd(trade.unrealizedCents, true)}
               origin={trade.origin}
             />

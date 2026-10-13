@@ -10,7 +10,7 @@ import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, TradeProposal } from "@/lib/risk/types";
 import { evaluateOrb, type Bar } from "@/lib/strategy/orb";
 
-const NOW = etInstant("2026-10-02", 10, 0);
+const NOW = etInstant("2026-10-02", 15, 30);
 
 function state(overrides: Partial<RiskState> = {}): RiskState {
   return {
@@ -145,6 +145,8 @@ describe("risk engine", () => {
   it("refuses entries outside the window", () => {
     const decision = evaluateRisk(proposal({ now: etInstant("2026-10-03", 11, 0) }), state());
     expect(decision.approved).toBe(false);
+    expect(evaluateRisk(proposal({ now: etInstant("2026-10-02", 10, 0) }), state()).approved).toBe(false);
+    expect(evaluateRisk(proposal({ now: etInstant("2026-10-02", 15, 36) }), state()).approved).toBe(false);
   });
 });
 
@@ -174,10 +176,18 @@ describe("calendar", () => {
     expect(sessionClock(etInstant("2026-11-26", 10, 0)).phase).toBe("closed");
     expect(sessionClock(etInstant("2026-10-03", 10, 0)).phase).toBe("closed");
     expect(sessionClock(etInstant("2026-10-02", 9, 40)).phase).toBe("opening_range");
-    expect(sessionClock(etInstant("2026-10-02", 10, 0)).phase).toBe("entry");
-    expect(sessionClock(etInstant("2026-10-02", 15, 55)).phase).toBe("flatten");
-    expect(sessionClock(etInstant("2026-11-27", 12, 55)).phase).toBe("flatten");
-    expect(sessionClock(etInstant("2026-11-27", 10, 0)).entryWindowOpen).toBe(true);
+    expect(sessionClock(etInstant("2026-10-02", 10, 0)).phase).toBe("manage");
+    expect(sessionClock(etInstant("2026-10-02", 10, 0)).entryWindowOpen).toBe(false);
+    expect(sessionClock(etInstant("2026-10-02", 10, 0)).label).toBe("Waiting for the last half-hour");
+    expect(sessionClock(etInstant("2026-10-02", 15, 30)).phase).toBe("entry");
+    expect(sessionClock(etInstant("2026-10-02", 15, 30)).entryWindowOpen).toBe(true);
+    expect(sessionClock(etInstant("2026-10-02", 15, 35)).phase).toBe("manage");
+    expect(sessionClock(etInstant("2026-10-02", 15, 55)).phase).toBe("manage");
+    expect(sessionClock(etInstant("2026-10-02", 15, 59)).phase).toBe("flatten");
+    expect(sessionClock(etInstant("2026-11-27", 12, 30)).entryWindowOpen).toBe(true);
+    expect(sessionClock(etInstant("2026-11-27", 12, 55)).phase).toBe("manage");
+    expect(sessionClock(etInstant("2026-11-27", 12, 59)).phase).toBe("flatten");
+    expect(sessionClock(etInstant("2026-11-27", 10, 0)).entryWindowOpen).toBe(false);
   });
 
   it("heartbeats on the ET hour while the market is closed, and wakes at 9:25", () => {

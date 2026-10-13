@@ -113,6 +113,7 @@ export async function getDesk() {
       entryPrice: trade.entryPrice,
       stopPrice: trade.stopPrice,
       targetPrice: trade.targetPrice,
+      setup: trade.setup,
       origin: trade.origin,
       openedAt: trade.openedAt.toISOString(),
       unrealizedCents: Math.round(((spy ?? trade.entryPrice) - trade.entryPrice) * trade.quantity * (trade.side === "LONG" ? 1 : -1) * 100),

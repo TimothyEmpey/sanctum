@@ -3,7 +3,7 @@ import path from "node:path";
 import type { Account, Holding, StrategySession, Trade } from "@prisma/client";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
-import { previousBusinessDays, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
+import { previousBusinessDays, retiredFlattenMinute, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
 import { etParts, roundPrice } from "@/lib/market/time";
 import { accountEquityCents } from "@/lib/portfolio/equity";
 import { RISK_LIMITS, STRATEGY_ID, TRADABLE_SYMBOL } from "@/lib/risk/constants";
@@ -11,7 +11,13 @@ import { evaluateRisk, haltReasonForState } from "@/lib/risk/engine";
 import { dollarRiskCents, notionalCents, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, Side } from "@/lib/risk/types";
-import { evaluateTrendPullback, type Bar, type TrendProposal } from "@/lib/strategy/trend-pullback";
+import {
+  BROKER_CEILING_PCT,
+  evaluateIntradayMomentum,
+  MOMENTUM_SETUP,
+  type Bar,
+  type MomentumProposal,
+} from "@/lib/strategy/intraday-momentum";
 import { prisma } from "@/server/db";
 import { deterministicJournal, maybeNarrate } from "@/server/journal";
 import {
@@ -366,6 +372,7 @@ async function manageOpenTrades(accountId: string, now: Date) {
           exit = { price: trade.targetPrice, purpose: "TARGET" };
           break;
         }
+        if (trade.setup === MOMENTUM_SETUP) continue;
         const oneR = trade.entryPrice + (trade.entryPrice - trade.initialStopPrice);
         if (bar.high >= oneR) {
           const change = stopChangeAllowed("LONG", trade.entryPrice, stop, trade.entryPrice);
@@ -387,8 +394,16 @@ async function manageOpenTrades(accountId: string, now: Date) {
   }
 }
 
-export async function flattenAgentTrades(accountId: string, now = new Date(), purpose = "FLATTEN") {
+export async function flattenAgentTrades(
+  accountId: string,
+  now = new Date(),
+  purpose = "FLATTEN",
+  options?: { exceptSetup?: string },
+) {
   const open = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
+  const targets = options?.exceptSetup ? open.filter((trade) => trade.setup !== options.exceptSetup) : open;
+  if (targets.length === 0) return 0;
+  const targetIds = new Set(targets.map((trade) => trade.id));
   const spy = await latestSpy(accountId);
   if (alpacaPaperConfigured()) {
     const working = await prisma.order.findMany({
@@ -396,6 +411,7 @@ export async function flattenAgentTrades(accountId: string, now = new Date(), pu
     });
     for (const order of working) {
       if (!order.brokerOrderId) continue;
+      if (options?.exceptSetup && (!order.tradeId || !targetIds.has(order.tradeId))) continue;
       try {
         await cancelPaperOrder(order.brokerOrderId);
       } catch {
@@ -403,7 +419,7 @@ export async function flattenAgentTrades(accountId: string, now = new Date(), pu
       }
       await prisma.order.update({ where: { id: order.id }, data: { status: "CANCELLED" } });
     }
-    for (const trade of open) {
+    for (const trade of targets) {
       assertAgentExit({
         symbol: trade.symbol,
         quantity: trade.quantity,
@@ -413,12 +429,12 @@ export async function flattenAgentTrades(accountId: string, now = new Date(), pu
       await sellPaperShares(trade.quantity);
       await closeTrade(trade, spy?.close ?? trade.entryPrice, purpose, now, { adjustCash: false });
     }
-    return open.length;
+    return targets.length;
   }
-  for (const trade of open) {
+  for (const trade of targets) {
     await closeTrade(trade, spy?.close ?? trade.entryPrice, purpose, now);
   }
-  return open.length;
+  return targets.length;
 }
 
 async function executeProposal(
@@ -426,7 +442,7 @@ async function executeProposal(
   session: StrategySession,
   equityCents: number,
   clock: SessionClock,
-  proposal: TrendProposal,
+  proposal: MomentumProposal,
   spy: number,
   now: Date,
 ) {
@@ -502,7 +518,7 @@ async function executeProposal(
       await logEvent(
         account.id,
         "ENTRY",
-        `Submitted ${decision.shares} SPY to Alpaca paper. Limit ${proposal.entryPrice.toFixed(2)}, stop ${proposal.stopPrice.toFixed(2)}.`,
+        `Submitted ${decision.shares} SPY to Alpaca paper. Limit ${proposal.entryPrice.toFixed(2)}, stop ${proposal.stopPrice.toFixed(2)}. Exit is the cash close.`,
       );
     } catch (error) {
       await prisma.strategySession.update({
@@ -596,8 +612,7 @@ async function reconcileAlpaca(accountId: string, now: Date) {
       const stopLeg = remote.legs?.find((leg) => leg.type === "stop" || leg.stop_price);
       const targetLeg = remote.legs?.find((leg) => leg.type === "limit" && leg.side === "sell");
       const stop = roundPrice(Number(stopLeg?.stop_price ?? order.stopPrice));
-      const risk = Math.max(0.01, fill - stop);
-      const target = roundPrice(Number(targetLeg?.limit_price ?? fill + risk * 1.5));
+      const target = roundPrice(Number(targetLeg?.limit_price ?? fill * (1 + BROKER_CEILING_PCT)));
       const quantity = Number(remote.filled_qty ?? order.quantity);
       await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -615,7 +630,7 @@ async function reconcileAlpaca(accountId: string, now: Date) {
             initialStopPrice: stop,
             targetPrice: target,
             status: "OPEN",
-            setup: "TREND_PULLBACK",
+            setup: MOMENTUM_SETUP,
             strategy: STRATEGY_ID,
             origin: "ENGINE",
             openedAt: now,
@@ -690,6 +705,7 @@ async function reconcileAlpaca(accountId: string, now: Date) {
     orderBy: { ts: "asc" },
   });
   for (const trade of open) {
+    if (trade.setup === MOMENTUM_SETUP) continue;
     let stop = trade.stopPrice;
     for (const bar of bars) {
       if (bar.ts < trade.openedAt || etParts(bar.ts).dateKey !== clock.dateKey) continue;
@@ -767,14 +783,19 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
 
   if (clock.tradingDay) {
     if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now);
+    const flattenSession = await ensureSession(account.id, clock.dateKey);
     if (haltReason || clock.flattenDue) {
-      const session = await ensureSession(account.id, clock.dateKey);
-      if (!session.flattened || haltReason) {
+      if (!flattenSession.flattened || haltReason) {
         const closed = await flattenAgentTrades(account.id, now, haltReason ? "HALT" : "FLATTEN");
         if (closed > 0) {
-          await logEvent(account.id, "FLATTEN", haltReason ?? "Day-trade cutoff. SPY position closed.");
+          await logEvent(account.id, "FLATTEN", haltReason ?? "Cash close. SPY position sold.");
         }
-        await prisma.strategySession.update({ where: { id: session.id }, data: { flattened: clock.flattenDue } });
+        await prisma.strategySession.update({ where: { id: flattenSession.id }, data: { flattened: clock.flattenDue } });
+      }
+    } else if (clock.minutes >= retiredFlattenMinute(clock.earlyClose)) {
+      const closed = await flattenAgentTrades(account.id, now, "FLATTEN", { exceptSetup: MOMENTUM_SETUP });
+      if (closed > 0) {
+        await logEvent(account.id, "FLATTEN", "Retired playbook cutoff. Open SPY position closed.");
       }
     }
   }
@@ -800,12 +821,19 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
     const pendingEntry = await prisma.order.count({
       where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: TRADABLE_SYMBOL },
     });
-    const view = evaluateTrendPullback({
+    const daily = await prisma.marketBar.findMany({
+      where: { accountId: account.id, symbol: TRADABLE_SYMBOL, timeframe: "1d" },
+      orderBy: { ts: "desc" },
+      take: 12,
+    });
+    const prior = daily.find((bar) => etParts(bar.ts).dateKey < clock.dateKey);
+    const view = evaluateIntradayMomentum({
       now,
       bars,
+      priorClose: prior?.close ?? null,
+      earlyClose: clock.earlyClose,
       hasOpenPosition: book.trades.length > 0 || pendingEntry > 0,
       tradesTaken: session.tradesTaken,
-      consecutiveLosses: session.consecutiveLosses,
       maxTrades: RISK_LIMITS.maxTradesPerDay,
     });
     await prisma.strategySession.update({

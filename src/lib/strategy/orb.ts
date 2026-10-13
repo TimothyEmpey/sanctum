@@ -1,6 +1,8 @@
 import { etParts, roundPrice } from "@/lib/market/time";
-import { STRATEGY_ID } from "@/lib/risk/constants";
 import type { Side } from "@/lib/risk/types";
+
+/** Retired playbook. The worker does not call this. */
+const STRATEGY_ID = "spy-orb-2026";
 
 export type Bar = {
   ts: number;

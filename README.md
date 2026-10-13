@@ -8,7 +8,7 @@ This is trading software, not investment advice. You can lose money.
 
 ## Playbook
 
-Trend pullback on SPY. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. One buy a day. The stop is at least 0.25% under the entry, or beyond the dip if the dip is deeper. The target is 1.5 times that distance, about 0.4% when the stop is at the minimum. Recent sessions have ranged about 0.5% to 0.9%, so the target sits inside a normal day. A deep dip is not skipped. The risk engine buys fewer shares. Shorts stay off. Flat before the close.
+Last-half-hour SPY, from Gao, Han, Li, and Zhou, Journal of Financial Economics (2018). The signal is the return from the previous close to 10:00 ET. If it is positive, Uriel buys at 3:30 PM ET and sells at the cash close. If it is not, Uriel stays flat. The paper also shorts a down signal. This desk does not, so the live book is the long side only. On 1993–2013 data their long-and-short version returned about 6.67% a year before costs, Sharpe about 1.08. After the bid-ask spread that was about 4.46% a year. A long-only cash account is a smaller slice, and the sample ends in 2013. This is not a promise of profit. The stop is 2% under the entry because the desk will not send an order without one. There is no profit target. One buy a day. Shorts stay off.
 
 The account limits are 2% risk per trade, 5% daily loss, 5% weekly loss, 5% drawdown from peak, 2 open positions, 4% combined open risk, and 1 trade a day. Stops are required before entry and cannot be widened. Size is `floor(equity × 2% / stop distance)`, then cut to cash. After a loss, the next buy is capped at that losing size.
 
@@ -18,7 +18,7 @@ The model is not on the order path. If `XAI_API_KEY` is set, Grok writes one jou
 
 The hot path is a Node loop: quotes, the playbook, the risk engine, then the paper ledger. It polls about every 20 seconds from 9:25 ET through the flatten. While the market is closed, including overnight, weekends, and NYSE holidays, it heartbeats on the hour in ET and wakes at 9:25 ET for the next session. No model call is required for it to trade.
 
-US equities are not a 24-hour market. The process stays up. It only sends orders from 9:50 to 15:30 ET (12:30 on the two 2026 early closes) and flattens by 15:50 ET.
+US equities are not a 24-hour market. The process stays up. It sends the buy at 3:30 PM ET (12:30 PM on the two 2026 early closes) and sells at the cash close. A position left over from an older playbook is still closed at 3:50 PM ET.
 
 ## Robinhood
 

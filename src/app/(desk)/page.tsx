@@ -26,7 +26,7 @@ export default async function DashboardPage() {
         <Metric label="Daily loss remaining" value={formatUsd(desk.dailyLossRemainingCents)} hint="5% of starting-day equity" />
         <Metric label="Open risk" value={formatUsd(desk.openRiskCents)} hint={`Cap ${formatUsd(desk.openRiskLimitCents)}`} />
         <Metric label="Buying power" value={formatUsd(desk.cashCents)} hint="Cash only. Margin is not used." />
-        <Metric label="Open positions" value={String(desk.openTrades.length)} hint={`${desk.tradesToday} of 3 entries today`} />
+        <Metric label="Open positions" value={String(desk.openTrades.length)} hint={`${desk.tradesToday} of ${desk.limits.maxTradesPerDay} entries today`} />
         <Metric label="Active orders" value={String(desk.orders.filter((order) => order.status === "WORKING").length)} />
         <Metric label="Week P&L" value={formatUsd(desk.weekPnlCents, true)} tone={moneyTone(desk.weekPnlCents)} />
       </section>

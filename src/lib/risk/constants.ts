@@ -14,5 +14,5 @@ export const PDT_EQUITY_CENTS = 2_500_000;
 export const PDT_MAX_DAY_TRADES = 3;
 export const PDT_WINDOW_BUSINESS_DAYS = 5;
 
-export const STRATEGY_ID = "spy-trend-pullback-2026";
-export const STRATEGY_NAME = "SPY trend pullback, long-only";
+export const STRATEGY_ID = "spy-intraday-momentum-2018";
+export const STRATEGY_NAME = "SPY last half-hour, long-only";

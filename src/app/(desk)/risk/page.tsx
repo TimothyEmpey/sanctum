@@ -14,7 +14,7 @@ const rules = [
   "One entry a day, two open positions, 4% combined open risk.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5%.",
   "SPY only. Other symbols and reserved SPY shares are untouchable.",
-  "Day trades are flat before the session cutoff.",
+  "The position is sold at the cash close. The stop is a disaster exit, not a profit target.",
   "Accounts under $25,000 stop at 3 day trades in 5 business days.",
 ];
 
@@ -76,7 +76,7 @@ export default async function RiskPage() {
       <Card>
         <CardTitle>Playbook</CardTitle>
         <p className="mt-3 text-sm leading-6">
-          The playbook is a long-only trend pullback. Price holds above a rising VWAP. A 5-minute bar dips and closes back up. That is the one buy for the day. The stop is at least 0.25% under the entry, or past the dip if the dip is deeper, and the target is 1.5 times that distance. On a normal SPY day that target is a few dollars, not a 2% run. A wide bar is not skipped. Shorts stay off. The position is flat before the close. The model writes a journal line after the fact. It does not choose the order.
+          The playbook is the SPY last-half-hour rule from Gao, Han, Li, and Zhou, Journal of Financial Economics (2018). The signal is the return from the previous close to 10:00 ET. If that return is positive, Uriel buys at 3:30 PM ET and sells at the cash close. If it is not, Uriel does not trade. The paper shorts a down signal. This desk does not, so it takes only the long side of that result. On 1993–2013 data the long-and-short version in the paper made about 6.67% a year before costs, Sharpe about 1.08. After the bid-ask spread that was about 4.46% a year. A long-only account is a smaller slice, and the sample ends in 2013. The stop is 2% under the entry so the risk engine can still buy with the cash on hand. The paper does not use a profit target. The model writes a journal line after the fact. It does not choose the order.
         </p>
         <ul className="mt-4 space-y-2 text-sm">
           {rules.map((rule) => (
