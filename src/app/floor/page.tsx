@@ -62,7 +62,7 @@ export default async function FloorPage() {
             </form>
           </div>
         </header>
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-2 gap-4">
           {floor.panels.map((panel) => (
             <Card key={panel.symbol} className="min-w-0">
               <div className="mb-3 flex items-baseline justify-between gap-3">

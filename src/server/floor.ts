@@ -3,8 +3,8 @@ import { alpacaPaperConfigured } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { alignAlpaca } from "@/server/trading";
 
-/** Grid order on the floor. The single-asset desk is unchanged. */
-const FLOOR_SYMBOLS = ["BTC/USD", "ETH/USD", "SPY", "QQQ"] as const;
+/** Floor grid: SPY, BTC, then QQQ, ETH. The single-asset desk is unchanged. */
+const FLOOR_SYMBOLS = ["SPY", "BTC/USD", "QQQ", "ETH/USD"] as const;
 
 function candle(bar: { ts: Date; open: number; high: number; low: number; close: number; volume: number }) {
   return {
