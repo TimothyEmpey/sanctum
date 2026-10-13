@@ -17,6 +17,7 @@ const links = [
   { href: "/logs", label: "Logs" },
   { href: "/pnl", label: "P&L" },
   { href: "/risk", label: "Risk" },
+  { href: "/floor", label: "Floor" },
 ];
 
 export function DeskShell({

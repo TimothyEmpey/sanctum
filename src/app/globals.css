@@ -89,6 +89,16 @@ button, input { font: inherit; }
   top: 12px;
 }
 
+.floor-pet-fonzo {
+  left: 12px;
+  top: 12px;
+}
+
+.floor-pet-uriel {
+  left: 136px;
+  top: 12px;
+}
+
 .uriel-hop,
 .uriel-stand {
   width: 100%;
@@ -114,6 +124,8 @@ button, input { font: inherit; }
 @media (max-width: 640px) {
   .uriel-pet { width: 88px; height: 88px; }
   .uriel-pet-home { right: 8px; top: 8px; }
+  .floor-pet-fonzo { left: 8px; top: 8px; }
+  .floor-pet-uriel { left: 104px; top: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
