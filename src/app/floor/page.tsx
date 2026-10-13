@@ -34,7 +34,7 @@ export default async function FloorPage() {
       <LiveRefresh />
       <FloorPets fonzoTone={fonzoTone} urielTone={urielTone} />
       <div className="mx-auto min-h-screen max-w-6xl px-4 pb-24 pt-5 md:pb-10 md:pt-6">
-        <header className="mb-5 flex flex-wrap items-center justify-between gap-3 pl-48 sm:pl-72">
+        <header className="mb-5 flex flex-wrap items-center justify-between gap-3 pl-28 pr-28 sm:pl-36 sm:pr-36">
           <div>
             <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Sanctum</p>
             <h1 className="text-lg font-semibold tracking-tight">Floor</h1>

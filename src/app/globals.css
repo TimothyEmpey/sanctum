@@ -90,12 +90,13 @@ button, input { font: inherit; }
 }
 
 .floor-pet-fonzo {
-  left: 12px;
+  left: auto;
+  right: 12px;
   top: 12px;
 }
 
 .floor-pet-uriel {
-  left: 136px;
+  left: 12px;
   top: 12px;
 }
 
@@ -124,8 +125,8 @@ button, input { font: inherit; }
 @media (max-width: 640px) {
   .uriel-pet { width: 88px; height: 88px; }
   .uriel-pet-home { right: 8px; top: 8px; }
-  .floor-pet-fonzo { left: 8px; top: 8px; }
-  .floor-pet-uriel { left: 104px; top: 8px; }
+  .floor-pet-fonzo { right: 8px; top: 8px; }
+  .floor-pet-uriel { left: 8px; top: 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

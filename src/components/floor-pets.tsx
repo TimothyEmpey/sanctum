@@ -43,24 +43,27 @@ function pick<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-/** Both pets stay inside the upper-left quadrant. Fonzo homes in its corner. Uriel homes at the quadrant's inner edge. */
-function quadrant(pet: Pet) {
-  const narrow = window.innerWidth < 640;
+/** Uriel stays in the upper-left quadrant. Fonzo stays in the upper-right. */
+export function floorQuadrant(pet: Pet, width: number, height: number) {
+  const narrow = width < 640;
   const size = narrow ? 88 : 112;
   const margin = narrow ? 8 : 12;
-  const minX = margin;
-  const maxX = Math.max(minX, window.innerWidth / 2 - size - margin);
   const minY = margin;
-  let maxY = window.innerHeight / 2 - size - margin;
+  let maxY = height / 2 - size - margin;
   if (maxY < minY) maxY = minY;
-  return {
-    minX,
-    minY,
-    maxX,
-    maxY,
-    homeX: pet === "fonzo" ? minX : maxX,
-    homeY: minY,
-  };
+  if (pet === "uriel") {
+    const minX = margin;
+    const maxX = Math.max(minX, width / 2 - size - margin);
+    return { minX, maxX, minY, maxY, homeX: minX, homeY: minY };
+  }
+  const edge = Math.max(margin, width - size - margin);
+  const minX = Math.min(width / 2, edge);
+  const maxX = Math.max(minX, edge);
+  return { minX, maxX, minY, maxY, homeX: maxX, homeY: minY };
+}
+
+function quadrant(pet: Pet) {
+  return floorQuadrant(pet, window.innerWidth, window.innerHeight);
 }
 
 export function FloorPets({ fonzoTone, urielTone }: { fonzoTone: Tone; urielTone: Tone }) {
