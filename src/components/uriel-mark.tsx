@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { petBox } from "@/components/floor-pets";
 
 type Tone = "live" | "paused" | "halted" | "idle";
 type Pose =
@@ -60,10 +61,8 @@ export function UrielMark({ tone, pet = "uriel" }: { tone: Tone; pet?: "uriel" |
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     const box = () => {
-      const narrow = window.innerWidth < 640;
-      // Keep in step with .uriel-pet in globals.css.
-      const size = narrow ? 88 : 112;
-      const margin = narrow ? 8 : 12;
+      // Keep in step with .uriel-pet and .fonzo-pet in globals.css.
+      const { size, margin } = petBox(pet, window.innerWidth);
       const width = window.innerWidth;
       const height = window.innerHeight;
       // Top-right cell of a 3 by 3 screen. His whole sprite stays inside it.
@@ -163,7 +162,7 @@ export function UrielMark({ tone, pet = "uriel" }: { tone: Tone; pet?: "uriel" |
       window.removeEventListener("resize", onResize);
       window.removeEventListener("pointerdown", onPet);
     };
-  }, []);
+  }, [pet]);
 
   useEffect(() => {
     if (!ready) return;
@@ -176,7 +175,7 @@ export function UrielMark({ tone, pet = "uriel" }: { tone: Tone; pet?: "uriel" |
   return (
     <div
       ref={petRef}
-      className={ready ? "uriel-pet" : "uriel-pet uriel-pet-home"}
+      className={ready ? (pet === "fonzo" ? "uriel-pet fonzo-pet" : "uriel-pet") : pet === "fonzo" ? "uriel-pet fonzo-pet uriel-pet-home" : "uriel-pet uriel-pet-home"}
       style={ready ? { transform: `translate(${pos.x}px, ${pos.y}px)`, transition: travel > 0 ? `transform ${travel}ms linear` : "none" } : undefined}
       aria-hidden
     >

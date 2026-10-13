@@ -43,23 +43,29 @@ function pick<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
+/** Empty space above Fonzo's art so the hat and the walk hop stay on screen. Matches .fonzo-pet in globals.css. */
+export function petBox(pet: Pet, width: number) {
+  const narrow = width < 640;
+  const art = narrow ? 88 : 112;
+  const topGuard = pet === "fonzo" ? (narrow ? 24 : 28) : 0;
+  return { art, topGuard, size: art + topGuard, margin: narrow ? 8 : 12 };
+}
+
 /** Uriel stays in the upper-left quadrant. Fonzo stays in the upper-right. */
 export function floorQuadrant(pet: Pet, width: number, height: number) {
-  const narrow = width < 640;
-  const size = narrow ? 88 : 112;
-  const margin = narrow ? 8 : 12;
+  const { size, margin, topGuard } = petBox(pet, width);
   const minY = margin;
   let maxY = height / 2 - size - margin;
   if (maxY < minY) maxY = minY;
   if (pet === "uriel") {
     const minX = margin;
     const maxX = Math.max(minX, width / 2 - size - margin);
-    return { minX, maxX, minY, maxY, homeX: minX, homeY: minY };
+    return { minX, maxX, minY, maxY, homeX: minX, homeY: minY, size, topGuard };
   }
   const edge = Math.max(margin, width - size - margin);
   const minX = Math.min(width / 2, edge);
   const maxX = Math.max(minX, edge);
-  return { minX, maxX, minY, maxY, homeX: maxX, homeY: minY };
+  return { minX, maxX, minY, maxY, homeX: maxX, homeY: minY, size, topGuard };
 }
 
 function quadrant(pet: Pet) {
@@ -176,11 +182,12 @@ function FloorPet({ pet, tone }: { pet: Pet; tone: Tone }) {
 
   const walking = pose === "walk" || pose === "walk-left";
   const homeClass = pet === "fonzo" ? "floor-pet-fonzo" : "floor-pet-uriel";
+  const frame = pet === "fonzo" ? "uriel-pet fonzo-pet" : "uriel-pet";
 
   return (
     <div
       ref={petRef}
-      className={ready ? "uriel-pet" : `uriel-pet ${homeClass}`}
+      className={ready ? frame : `${frame} ${homeClass}`}
       data-floor-pet={pet}
       style={
         ready

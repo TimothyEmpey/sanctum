@@ -80,7 +80,19 @@ button, input { font: inherit; }
   z-index: 40;
   width: 112px;
   height: 112px;
+  overflow: visible;
   pointer-events: none;
+}
+
+/* 28px above the art. The walk hop rises 4px into this gap, and the hat stays on screen. */
+.fonzo-pet {
+  height: 140px;
+}
+
+.fonzo-pet .uriel-hop,
+.fonzo-pet .uriel-stand {
+  height: 112px;
+  margin-top: 28px;
 }
 
 .uriel-pet-home {
@@ -127,6 +139,12 @@ button, input { font: inherit; }
   .uriel-pet-home { right: 8px; top: 8px; }
   .floor-pet-fonzo { right: 8px; top: 8px; }
   .floor-pet-uriel { left: 8px; top: 8px; }
+  .fonzo-pet { height: 112px; }
+  .fonzo-pet .uriel-hop,
+  .fonzo-pet .uriel-stand {
+    height: 88px;
+    margin-top: 24px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

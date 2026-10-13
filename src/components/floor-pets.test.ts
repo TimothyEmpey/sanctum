@@ -10,13 +10,16 @@ describe("floor quadrants", () => {
     ] as const) {
       const uriel = floorQuadrant("uriel", width, height);
       const fonzo = floorQuadrant("fonzo", width, height);
-      const size = width < 640 ? 88 : 112;
+      const hop = 4;
+      expect(uriel.topGuard).toBe(0);
       expect(uriel.homeX).toBeLessThan(width / 2);
-      expect(uriel.maxX + size).toBeLessThanOrEqual(width / 2);
+      expect(uriel.maxX + uriel.size).toBeLessThanOrEqual(width / 2);
       expect(fonzo.homeX).toBeGreaterThanOrEqual(width / 2);
       expect(fonzo.minX).toBeGreaterThanOrEqual(width / 2);
-      expect(uriel.maxY + size).toBeLessThanOrEqual(height / 2);
-      expect(fonzo.maxY + size).toBeLessThanOrEqual(height / 2);
+      expect(fonzo.topGuard).toBeGreaterThanOrEqual(24);
+      expect(fonzo.minY + fonzo.topGuard - hop).toBeGreaterThanOrEqual(28);
+      expect(uriel.maxY + uriel.size).toBeLessThanOrEqual(height / 2);
+      expect(fonzo.maxY + fonzo.size).toBeLessThanOrEqual(height / 2);
       expect(uriel.maxX).toBeLessThan(fonzo.minX);
     }
   });
