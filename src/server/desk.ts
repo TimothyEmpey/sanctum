@@ -1,8 +1,8 @@
-import { assetLabel, normalizeSymbol, resolveView, rulesFor, type Asset } from "@/lib/assets";
+import { assetLabel, assetShareCents, normalizeSymbol, resolveView, rulesFor, type Asset } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
 import { RISK_LIMITS } from "@/lib/risk/constants";
-import { riskBudgetCents } from "@/lib/risk/sizing";
+import { deployedNotionalCents, riskBudgetCents } from "@/lib/risk/sizing";
 import { alpacaPaperConfigured, alpacaStatus } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { robinhoodStatus } from "@/server/robinhood";
@@ -85,6 +85,13 @@ export async function getDesk(query?: DeskQuery) {
   const session = account.sessions.find((row) => row.symbol === asset.symbol && row.sessionDate === sessionDate) ?? null;
   const assetTrades = account.trades.filter((trade) => trade.symbol === asset.symbol);
   const assetOrders = account.orders.filter((order) => order.symbol === asset.symbol);
+  const shareCents = assetShareCents(account.equityCents);
+  const shareUsedCents = deployedNotionalCents(
+    assetTrades.filter((trade) => trade.status === "OPEN" && trade.origin === "ENGINE"),
+    assetOrders.filter((order) => order.status === "WORKING" && order.purpose === "ENTRY"),
+    asset.symbol,
+  );
+  const buyingPowerCents = Math.max(0, Math.min(account.cashCents, shareCents - shareUsedCents));
   const snapshots = account.snapshots.filter((row) => !resetAt || row.capturedAt >= resetAt);
 
   return {
@@ -114,6 +121,8 @@ export async function getDesk(query?: DeskQuery) {
     mark,
     equityCents: account.equityCents,
     cashCents: account.cashCents,
+    shareCents,
+    buyingPowerCents,
     brokerEquityCents: account.brokerEquityCents,
     brokerCashCents: account.brokerCashCents,
     peakEquityCents: account.peakEquityCents,

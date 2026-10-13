@@ -5,7 +5,7 @@ import { etInstant } from "@/lib/market/time";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { aggregateEquity } from "@/lib/portfolio/equity";
 import { evaluateRisk } from "@/lib/risk/engine";
-import { quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
+import { deployedNotionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, TradeProposal } from "@/lib/risk/types";
 import { evaluateOrb, type Bar } from "@/lib/strategy/orb";
@@ -55,6 +55,18 @@ describe("position sizing", () => {
     expect(sized.shares).toBe(500);
   });
 
+  it("counts only this asset's open cost and working entry", () => {
+    const used = deployedNotionalCents(
+      [{ symbol: "QQQ", quantity: 1, entryPrice: 100 }],
+      [
+        { symbol: "QQQ", quantity: 1, limitPrice: 100 },
+        { symbol: "SPY", quantity: 1, limitPrice: 500 },
+      ],
+      "QQQ",
+    );
+    expect(used).toBe(20_000);
+  });
+
   it("floors a crypto quantity to the exchange step", () => {
     const sized = quantityForRisk(100_000, 100_000, 98_000, 0.0001);
     expect(sized.budgetCents).toBe(2_000);
@@ -64,7 +76,16 @@ describe("position sizing", () => {
 
 describe("risk engine", () => {
   it("approves a sized SPY long with a stop", () => {
-    const decision = evaluateRisk(proposal(), state());
+    const decision = evaluateRisk(
+      proposal(),
+      state({
+        equityCents: 100_000_000,
+        cashCents: 100_000_000,
+        peakEquityCents: 100_000_000,
+        dayStartEquityCents: 100_000_000,
+        weekStartEquityCents: 100_000_000,
+      }),
+    );
     expect(decision.approved).toBe(true);
     expect(decision.shares).toBe(500);
     expect(decision.riskCents).toBe(100_000);
@@ -77,7 +98,7 @@ describe("risk engine", () => {
   });
 
   it("reduces size to available cash", () => {
-    const decision = evaluateRisk(proposal(), state({ cashCents: 5_000_000 }));
+    const decision = evaluateRisk(proposal(), state({ equityCents: 40_000_000, cashCents: 5_000_000 }));
     expect(decision.approved).toBe(true);
     expect(decision.shares).toBe(100);
     expect(decision.reasons.join(" ")).toMatch(/reduced/);
@@ -150,7 +171,17 @@ describe("risk engine", () => {
 
   it("allows QQQ only for the stock worker", () => {
     expect(evaluateRisk(proposal({ symbol: "QQQ" }), state()).approved).toBe(false);
-    const decision = evaluateRisk(proposal({ symbol: "QQQ" }), state({ allowedSymbols: ["SPY", "QQQ"] }));
+    const decision = evaluateRisk(
+      proposal({ symbol: "QQQ" }),
+      state({
+        allowedSymbols: ["SPY", "QQQ"],
+        equityCents: 100_000_000,
+        cashCents: 100_000_000,
+        peakEquityCents: 100_000_000,
+        dayStartEquityCents: 100_000_000,
+        weekStartEquityCents: 100_000_000,
+      }),
+    );
     expect(decision.approved).toBe(true);
     expect(decision.shares).toBe(500);
   });
@@ -179,7 +210,8 @@ describe("risk engine", () => {
       }),
     );
     expect(decision.approved).toBe(true);
-    expect(decision.shares).toBeCloseTo(0.01, 8);
+    expect(decision.shares).toBeCloseTo(0.0025, 8);
+    expect(decision.reasons.join(" ")).toMatch(/25%/);
     const paused = evaluateRisk(
       proposal({
         symbol: "ETH/USD",
@@ -195,6 +227,37 @@ describe("risk engine", () => {
     );
     expect(paused.approved).toBe(false);
     expect(paused.reasons.join(" ")).toMatch(/Fonzo is paused/);
+  });
+
+  it("keeps each asset inside its quarter of account equity", () => {
+    const book = {
+      equityCents: 100_000,
+      cashCents: 100_000,
+      peakEquityCents: 100_000,
+      dayStartEquityCents: 100_000,
+      weekStartEquityCents: 100_000,
+      allowedSymbols: ["SPY", "QQQ"],
+    };
+    const spy = evaluateRisk(
+      proposal({ entryPrice: 778, stopPrice: 762.44, targetPrice: 816.9, requestedShares: 1 }),
+      state(book),
+    );
+    expect(spy.approved).toBe(false);
+    expect(spy.reasons.join(" ")).toMatch(/25%/);
+    const used = evaluateRisk(
+      proposal({
+        symbol: "QQQ",
+        entryPrice: 40,
+        stopPrice: 39,
+        targetPrice: 42,
+        requestedShares: 4,
+      }),
+      state({ ...book, sleeveUsedCents: 20_000 }),
+    );
+    expect(used.approved).toBe(true);
+    expect(used.shares).toBe(1);
+    expect(used.computed.notionalCents).toBeLessThanOrEqual(5_000);
+    expect(used.reasons.join(" ")).toMatch(/25%/);
   });
 
   it("refuses entries outside the window", () => {

@@ -36,3 +36,18 @@ export function dollarRiskCents(shares: number, entryPrice: number, stopPrice: n
 export function notionalCents(shares: number, price: number) {
   return Math.round(shares * price * 100);
 }
+
+/** Cash already committed to one asset: open cost plus a working entry. */
+export function deployedNotionalCents(
+  trades: Array<{ symbol: string; quantity: number; entryPrice: number }>,
+  orders: Array<{ symbol: string; quantity: number; limitPrice: number | null }>,
+  symbol: string,
+) {
+  const fromTrades = trades
+    .filter((trade) => trade.symbol === symbol)
+    .reduce((sum, trade) => sum + notionalCents(trade.quantity, trade.entryPrice), 0);
+  const fromOrders = orders
+    .filter((order) => order.symbol === symbol && order.limitPrice != null)
+    .reduce((sum, order) => sum + notionalCents(order.quantity, order.limitPrice ?? 0), 0);
+  return fromTrades + fromOrders;
+}

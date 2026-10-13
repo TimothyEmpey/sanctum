@@ -83,6 +83,12 @@ export const ETH_ASSET: Asset = {
 };
 
 export const ASSETS: Asset[] = [SPY_ASSET, QQQ_ASSET, BTC_ASSET, ETH_ASSET];
+
+/** Even share of account equity. Four assets, so each one is designated 25%. */
+export function assetShareCents(equityCents: number) {
+  if (!(equityCents > 0) || ASSETS.length === 0) return 0;
+  return Math.floor(equityCents / ASSETS.length);
+}
 export const STOCK_ASSETS = ASSETS.filter((asset) => asset.assetClass === "stocks");
 export const CRYPTO_ASSETS = ASSETS.filter((asset) => asset.assetClass === "crypto");
 
@@ -130,6 +136,7 @@ const STOCK_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
   "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
+  "SPY, QQQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that ETF for the session.",
   "One entry a day for each ETF. Two open positions and 4% combined open risk across the shared book.",
@@ -143,6 +150,7 @@ const CRYPTO_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
   "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
+  "SPY, QQQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that coin for the UTC day.",
   "One entry a day for each coin. Two open positions and 4% combined open risk across the shared book.",

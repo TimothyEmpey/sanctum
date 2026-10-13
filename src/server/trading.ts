@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Account, StrategySession, Trade } from "@prisma/client";
-import { ASSETS, assetBySymbol, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
+import type { Account, Prisma, StrategySession, Trade } from "@prisma/client";
+import { ASSETS, assetBySymbol, assetShareCents, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
 import { previousBusinessDays, retiredFlattenMinute, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
@@ -10,7 +10,7 @@ import { etInstant, etParts, formatQty, roundPrice } from "@/lib/market/time";
 import { accountEquityCents } from "@/lib/portfolio/equity";
 import { RISK_LIMITS, STRATEGY_ID } from "@/lib/risk/constants";
 import { evaluateRisk, haltReasonForState } from "@/lib/risk/engine";
-import { dollarRiskCents, notionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
+import { deployedNotionalCents, dollarRiskCents, notionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, Side } from "@/lib/risk/types";
 import { evaluateCryptoMomentum, type CryptoProposal } from "@/lib/strategy/crypto-momentum";
@@ -302,7 +302,16 @@ async function riskState(
     shortingEnabled: account.shortingEnabled,
     dayTradesInPdtWindow: await dayTradeCount(account.id, clock.dateKey),
     allowedSymbols,
+    sleeveUsedCents: deployedNotionalCents(open, workingEntries, symbol),
   };
+}
+
+async function shareRoomCents(tx: Prisma.TransactionClient, accountId: string, symbol: string, equityCents: number) {
+  const [trades, orders] = await Promise.all([
+    tx.trade.findMany({ where: { accountId, symbol, status: "OPEN", origin: "ENGINE" } }),
+    tx.order.findMany({ where: { accountId, symbol, status: "WORKING", purpose: "ENTRY" } }),
+  ]);
+  return Math.max(0, assetShareCents(equityCents) - deployedNotionalCents(trades, orders, symbol));
 }
 
 async function ensureSession(accountId: string, dateKey: string, symbol: string) {
@@ -662,6 +671,7 @@ async function executeProposal(
         });
         if (openEntry) return "entry" as const;
         if (rows[0].cashCents < reserved) return "cash" as const;
+        if (reserved > (await shareRoomCents(tx, account.id, proposal.symbol, equityCents))) return "share" as const;
         await tx.account.update({
           where: { id: account.id },
           data: { cashCents: { decrement: reserved } },
@@ -680,7 +690,7 @@ async function executeProposal(
           },
         });
       });
-      if (created === "entry" || created === "cash") {
+      if (created === "entry" || created === "cash" || created === "share") {
         await prisma.strategySession.update({
           where: { id: session.id },
           data: { lastSignalBarTs: new Date(proposal.signalBarTs) },
@@ -690,7 +700,9 @@ async function executeProposal(
           "RISK_BLOCK",
           created === "cash"
             ? `Not enough cash in the working book for ${proposal.symbol}.`
-            : `${proposal.symbol} entry is already working.`,
+            : created === "share"
+              ? `${proposal.symbol} is designated 25% of account equity. This order does not fit that share.`
+              : `${proposal.symbol} entry is already working.`,
           "warn",
         );
         return;
@@ -745,6 +757,9 @@ async function executeProposal(
   await prisma.$transaction(async (tx) => {
     const fresh = await tx.account.findUniqueOrThrow({ where: { id: account.id } });
     if (fresh.cashCents < cost) throw new Error("Cash changed before the fill.");
+    if (cost > (await shareRoomCents(tx, account.id, proposal.symbol, equityCents))) {
+      throw new Error(`${proposal.symbol} is designated 25% of account equity. This order does not fit that share.`);
+    }
     const trade = await tx.trade.create({
       data: {
         accountId: account.id,

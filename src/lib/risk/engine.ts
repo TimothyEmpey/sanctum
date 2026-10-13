@@ -1,3 +1,4 @@
+import { assetShareCents } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { PDT_EQUITY_CENTS, PDT_MAX_DAY_TRADES, RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
@@ -15,7 +16,7 @@ function floorToStep(raw: number, step: number) {
 
 /**
  * Independent of the strategy. Every entry passes through here.
- * Size may be reduced to fit cash or remaining open-risk budget. It is never increased.
+ * Size may be reduced to fit this asset's 25% share, cash, or remaining open-risk budget. It is never increased.
  */
 export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDecision {
   const reasons: string[] = [];
@@ -123,16 +124,26 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
       proposal.side === "LONG" && proposal.entryPrice > 0
         ? floorToStep(state.cashCents / 100 / proposal.entryPrice, step)
         : shares;
-    const fitted = Math.min(shares, maxShares, byOpenRisk, byCash);
+    const shareRoomCents = Math.max(0, assetShareCents(state.equityCents) - (state.sleeveUsedCents ?? 0));
+    const byShare =
+      proposal.entryPrice > 0 ? floorToStep(shareRoomCents / 100 / proposal.entryPrice, step) : 0;
+    const fitted = Math.min(shares, maxShares, byOpenRisk, byCash, byShare);
+    const shareBinds = byShare + 1e-9 < Math.min(shares, maxShares, byOpenRisk, byCash);
     if (fitted + 1e-9 < minQty) {
       reasons.push(
-        wholeShares
-          ? "Available cash or open-risk budget cannot fund one share."
-          : "Available cash or open-risk budget cannot fund the minimum quantity.",
+        byShare + 1e-9 < minQty
+          ? `${proposal.symbol} is designated 25% of account equity, and that share cannot fund the minimum size.`
+          : wholeShares
+            ? "Available cash or open-risk budget cannot fund one share."
+            : "Available cash or open-risk budget cannot fund the minimum quantity.",
       );
     } else if (fitted + 1e-9 < shares) {
       shares = fitted;
-      reasons.push("Position size reduced to the cash and open-risk budget.");
+      reasons.push(
+        shareBinds
+          ? "Position size reduced to this asset 25% share of account equity."
+          : "Position size reduced to the cash and open-risk budget.",
+      );
     } else {
       shares = fitted;
     }

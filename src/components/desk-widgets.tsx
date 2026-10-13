@@ -18,7 +18,7 @@ export function BookBanner({ mode, demo, brokerEquityCents }: { mode: string; de
     const broker = brokerEquityCents == null ? "a larger Alpaca paper account" : `Alpaca paper at ${formatUsd(brokerEquityCents)}`;
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[color-mix(in_oklab,var(--primary)_10%,transparent)] px-4 py-3 text-sm">
-        The working book is $1,000 and is shared by Uriel and Fonzo. Orders size from this cash. Margin is not used. The broker is {broker}, and that account is not reset.
+        The working book is $1,000 and is shared by Uriel and Fonzo. SPY, QQQ, BTC, and ETH are each designated 25% of that equity. Margin is not used. The broker is {broker}, and that account is not reset.
       </div>
     );
   }

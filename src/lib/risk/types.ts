@@ -18,6 +18,8 @@ export type TradeProposal = {
 export type RiskState = {
   equityCents: number;
   cashCents: number;
+  /** Notional already committed to this symbol. The rest of its 25% share is still free. */
+  sleeveUsedCents?: number;
   peakEquityCents: number;
   dayStartEquityCents: number;
   weekStartEquityCents: number;

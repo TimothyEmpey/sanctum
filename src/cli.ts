@@ -1,4 +1,4 @@
-import { STOCK_SYMBOLS, CRYPTO_SYMBOLS, TRADABLE_SYMBOLS, WORKING_BOOK_CENTS, type DeskName } from "@/lib/assets";
+import { ASSETS, assetLabel, assetShareCents, STOCK_SYMBOLS, CRYPTO_SYMBOLS, TRADABLE_SYMBOLS, WORKING_BOOK_CENTS, type DeskName } from "@/lib/assets";
 import { etParts, formatUsd } from "@/lib/market/time";
 import { alpacaPaperConfigured, getPaperBalances } from "@/server/alpaca";
 import { prisma } from "@/server/db";
@@ -63,6 +63,8 @@ async function balance() {
   const book = await snapshot();
   console.log(line("Portfolio", formatUsd(book.equityCents)));
   console.log(line("Cash", formatUsd(book.cashCents)));
+  const share = assetShareCents(book.equityCents);
+  for (const asset of ASSETS) console.log(line(`${assetLabel(asset)} share`, formatUsd(share)));
   if (book.brokerEquity != null) console.log(line("Broker", formatUsd(book.brokerEquity)));
   if (book.brokerCash != null) console.log(line("Broker cash", formatUsd(book.brokerCash)));
 }
