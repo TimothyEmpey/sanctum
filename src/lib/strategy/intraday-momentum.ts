@@ -40,13 +40,25 @@ export type MomentumContext = {
   maxTrades?: number;
 };
 
+export type MomentumAsset = {
+  symbol: "SPY" | "QQQ";
+  strategy: string;
+  setup: string;
+};
+
+const SPY_ASSET: MomentumAsset = {
+  symbol: "SPY",
+  strategy: STRATEGY_ID,
+  setup: MOMENTUM_SETUP,
+};
+
 export type MomentumProposal = {
-  symbol: "SPY";
+  symbol: "SPY" | "QQQ";
   side: Side;
   entryPrice: number;
   stopPrice: number;
   targetPrice: number;
-  setup: typeof MOMENTUM_SETUP;
+  setup: string;
   strategy: string;
   reason: string;
   signalBarTs: number;
@@ -111,7 +123,7 @@ function entryClock(earlyClose: boolean) {
   return { start, hour, minute, label };
 }
 
-export function evaluateIntradayMomentum(context: MomentumContext): MomentumSnapshot {
+export function evaluateIntradayMomentum(context: MomentumContext, asset: MomentumAsset = SPY_ASSET): MomentumSnapshot {
   const z = etParts(context.now);
   const maxTrades = context.maxTrades ?? 1;
   const clock = entryClock(context.earlyClose);
@@ -139,7 +151,7 @@ export function evaluateIntradayMomentum(context: MomentumContext): MomentumSnap
     });
   }
 
-  if (context.hasOpenPosition) return empty("An SPY position is already open.");
+  if (context.hasOpenPosition) return empty(`A ${asset.symbol} position is already open.`);
   if (context.tradesTaken >= maxTrades) return empty("Daily trade cap reached.");
   if (ten == null || prior == null) return empty("The 10:00 ET price or the previous close is missing.");
   if (!signalUp) {
@@ -149,7 +161,7 @@ export function evaluateIntradayMomentum(context: MomentumContext): MomentumSnap
   }
 
   const latest = latestPrint(context.bars, z.dateKey, z.minutes);
-  if (latest == null) return empty("No SPY price for the entry.");
+  if (latest == null) return empty(`No ${asset.symbol} price for the entry.`);
   const entry = roundPrice(latest + LIMIT_OFFSET);
   const stop = roundPrice(entry * (1 - DISASTER_STOP_PCT));
   const target = roundPrice(entry * (1 + BROKER_CEILING_PCT));
@@ -165,13 +177,13 @@ export function evaluateIntradayMomentum(context: MomentumContext): MomentumSnap
     standDown: null,
     note: `Last half-hour long. Sell at the cash close. The ${clock.label} entry is the published open.`,
     proposal: {
-      symbol: "SPY",
+      symbol: asset.symbol,
       side: "LONG",
       entryPrice: entry,
       stopPrice: stop,
       targetPrice: target,
-      setup: MOMENTUM_SETUP,
-      strategy: STRATEGY_ID,
+      setup: asset.setup,
+      strategy: asset.strategy,
       reason:
         "First half-hour return, previous close to 10:00 ET, is positive. Buy the last half-hour and sell at the cash close. The stop is 2% under the entry.",
       signalBarTs: etInstant(z.dateKey, clock.hour, clock.minute).getTime(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assertPaperBaseUrl, paperBracketOrder } from "@/server/alpaca";
+import { assertPaperBaseUrl, paperBracketOrder, paperCryptoLimitBuy, paperCryptoStop } from "@/server/alpaca";
 
 describe("alpaca paper broker", () => {
   it("locks orders to the paper host", () => {
@@ -47,5 +47,32 @@ describe("alpaca paper broker", () => {
         clientOrderId: "uriel-3",
       }),
     ).toThrow(/stop/);
+  });
+
+  it("builds a QQQ bracket and a crypto limit without a take-profit", () => {
+    expect(
+      paperBracketOrder({
+        symbol: "QQQ",
+        quantity: 1,
+        limitPrice: 500,
+        stopPrice: 490,
+        targetPrice: 525,
+        clientOrderId: "uriel-qqq",
+      }).symbol,
+    ).toBe("QQQ");
+    expect(
+      paperCryptoLimitBuy({ symbol: "BTC/USD", quantity: 0.01, limitPrice: 100_000, clientOrderId: "fonzo-btc" }),
+    ).toMatchObject({
+      symbol: "BTC/USD",
+      qty: "0.01",
+      side: "buy",
+      type: "limit",
+      time_in_force: "gtc",
+    });
+    const stop = paperCryptoStop({ symbol: "ETH/USD", quantity: 0.25, stopPrice: 4_000, clientOrderId: "fonzo-eth" });
+    expect(stop.type).toBe("stop_limit");
+    expect(stop.side).toBe("sell");
+    expect(Number(stop.limit_price)).toBeLessThan(Number(stop.stop_price));
+    expect(() => paperCryptoLimitBuy({ symbol: "SPY", quantity: 1, limitPrice: 10, clientOrderId: "nope" })).toThrow(/untouchable/);
   });
 });

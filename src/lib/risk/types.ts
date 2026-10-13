@@ -9,6 +9,10 @@ export type TradeProposal = {
   requestedShares: number;
   setup: string;
   now: Date;
+  /** Crypto uses the UTC session. Stocks stay on the NYSE clock. */
+  market?: "nyse" | "crypto";
+  /** 1 for whole shares. Crypto uses a fraction such as 0.0001. */
+  quantityStep?: number;
 };
 
 export type RiskState = {
@@ -28,6 +32,8 @@ export type RiskState = {
   spyPositionOpen: boolean;
   shortingEnabled: boolean;
   dayTradesInPdtWindow: number;
+  /** Defaults to SPY when omitted, so a stray proposal cannot reach another symbol. */
+  allowedSymbols?: string[];
 };
 
 export type RiskDecision = {

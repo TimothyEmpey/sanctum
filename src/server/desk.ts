@@ -1,13 +1,32 @@
+import { assetLabel, normalizeSymbol, resolveView, rulesFor, type Asset } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
-import { RISK_LIMITS, STRATEGY_NAME } from "@/lib/risk/constants";
+import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
+import { RISK_LIMITS } from "@/lib/risk/constants";
 import { riskBudgetCents } from "@/lib/risk/sizing";
 import { alpacaPaperConfigured, alpacaStatus } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { robinhoodStatus } from "@/server/robinhood";
-import { alignAlpaca, readHeartbeat } from "@/server/trading";
+import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
 
-export async function getDesk() {
+export type DeskQuery = { book?: string; asset?: string };
+
+function proposalSymbol(proposal: unknown) {
+  if (!proposal || typeof proposal !== "object" || !("symbol" in proposal)) return null;
+  const symbol = (proposal as { symbol?: unknown }).symbol;
+  return typeof symbol === "string" ? normalizeSymbol(symbol) : null;
+}
+
+function eventForAsset(message: string, kind: string, asset: Asset) {
+  const text = message.toUpperCase();
+  if (text.includes(asset.symbol.toUpperCase()) || text.includes(assetLabel(asset).toUpperCase())) return true;
+  if (kind !== "CONTROL") return false;
+  return asset.desk === "fonzo" ? message.includes("Fonzo") : message.includes("Uriel");
+}
+
+export async function getDesk(query?: DeskQuery) {
   const now = new Date();
+  const view = resolveView(query?.book, query?.asset);
+  const asset = view.asset;
   const existing = await prisma.account.findFirst({ select: { id: true } });
   if (existing && alpacaPaperConfigured()) {
     try {
@@ -19,55 +38,84 @@ export async function getDesk() {
   const account = await prisma.account.findFirst({
     include: {
       holdings: { orderBy: { symbol: "asc" } },
-      trades: { orderBy: { openedAt: "desc" }, take: 60 },
-      orders: { orderBy: { createdAt: "desc" }, take: 80 },
+      trades: { orderBy: { openedAt: "desc" }, take: 200 },
+      orders: { orderBy: { createdAt: "desc" }, take: 200 },
       snapshots: { orderBy: { capturedAt: "desc" }, take: 1500 },
-      events: { orderBy: { createdAt: "desc" }, take: 40 },
-      decisions: { orderBy: { createdAt: "desc" }, take: 12 },
-      sessions: { orderBy: { sessionDate: "desc" }, take: 1 },
+      events: { orderBy: { createdAt: "desc" }, take: 80 },
+      decisions: { orderBy: { createdAt: "desc" }, take: 40 },
+      sessions: { orderBy: { sessionDate: "desc" }, take: 30 },
     },
   });
   if (!account) return null;
 
-  const clock = sessionClock(now);
-  const heartbeat = readHeartbeat();
-  const spy = heartbeat?.spy ?? account.snapshots.find((snapshot) => snapshot.spyPrice)?.spyPrice ?? null;
-  const dayPnlCents = account.equityCents - account.dayStartEquityCents;
-  const weekPnlCents = account.equityCents - account.weekStartEquityCents;
-  const openTrades = account.trades.filter((trade) => trade.status === "OPEN");
-  const openRiskCents = openTrades
-    .filter((trade) => trade.origin === "ENGINE")
-    .reduce((sum, trade) => sum + Math.round(Math.abs(trade.entryPrice - trade.stopPrice) * trade.quantity * 100), 0);
+  const stockClock = sessionClock(now);
+  const cryptoClock = cryptoSessionClock(now);
+  const viewed = asset.market === "crypto" ? cryptoClock : stockClock;
+  const sessionDate = asset.market === "crypto" ? utcParts(now).dateKey : stockClock.dateKey;
+  const stockBeat = readHeartbeat();
+  const fonzoBeat = readFonzoHeartbeat();
+  const heartbeat = asset.market === "crypto" ? fonzoBeat : stockBeat;
+  const resetAt = account.bookResetAt;
 
-  const [dailyBars, minuteBars] = await Promise.all([
+  const [dailyBars, minuteBars, latestBar] = await Promise.all([
     prisma.marketBar.findMany({
-      where: { accountId: account.id, symbol: "SPY", timeframe: "1d" },
+      where: { accountId: account.id, symbol: asset.symbol, timeframe: "1d" },
       orderBy: { ts: "desc" },
       take: 140,
     }),
     prisma.marketBar.findMany({
-      where: { accountId: account.id, symbol: "SPY", timeframe: "1m" },
+      where: { accountId: account.id, symbol: asset.symbol, timeframe: "1m" },
       orderBy: { ts: "desc" },
       take: 500,
     }),
+    prisma.marketBar.findFirst({
+      where: { accountId: account.id, symbol: asset.symbol },
+      orderBy: { ts: "desc" },
+    }),
   ]);
+
+  const mark = latestBar?.close ?? (asset.symbol === "SPY" ? stockBeat?.spy ?? null : null) ?? null;
+  const dayPnlCents = account.equityCents - account.dayStartEquityCents;
+  const weekPnlCents = account.equityCents - account.weekStartEquityCents;
+  const engineOpen = account.trades.filter((trade) => trade.status === "OPEN" && trade.origin === "ENGINE");
+  const openRiskCents = engineOpen.reduce(
+    (sum, trade) => sum + Math.round(Math.abs(trade.entryPrice - trade.stopPrice) * trade.quantity * 100),
+    0,
+  );
+  const session = account.sessions.find((row) => row.symbol === asset.symbol && row.sessionDate === sessionDate) ?? null;
+  const assetTrades = account.trades.filter((trade) => trade.symbol === asset.symbol);
+  const assetOrders = account.orders.filter((order) => order.symbol === asset.symbol);
+  const snapshots = account.snapshots.filter((row) => !resetAt || row.capturedAt >= resetAt);
 
   return {
     demo: account.demo,
     mode: account.mode,
-    paused: account.agentPaused,
+    paused: asset.desk === "fonzo" ? account.fonzoPaused : account.agentPaused,
+    urielPaused: account.agentPaused,
+    fonzoPaused: account.fonzoPaused,
     haltReason: account.haltReason,
     shortingEnabled: account.shortingEnabled,
-    strategy: STRATEGY_NAME,
+    workerName: asset.desk === "fonzo" ? "Fonzo" : "Uriel",
+    deskName: asset.desk,
+    assetClass: asset.assetClass,
+    symbol: asset.symbol,
+    assetLabel: assetLabel(asset),
+    playbook: asset.playbook,
+    rules: rulesFor(asset),
+    strategy: asset.strategyName,
+    stockLive: stockClock.tradingDay && stockClock.phase !== "closed" && stockClock.phase !== "idle",
     clock: {
-      phase: clock.phase,
-      label: clock.label,
-      dateKey: clock.dateKey,
-      tradingDay: clock.tradingDay,
+      phase: viewed.phase,
+      label: viewed.label,
+      dateKey: viewed.dateKey,
+      tradingDay: asset.market === "crypto" ? true : stockClock.tradingDay,
     },
-    spy,
+    spy: mark,
+    mark,
     equityCents: account.equityCents,
     cashCents: account.cashCents,
+    brokerEquityCents: account.brokerEquityCents,
+    brokerCashCents: account.brokerCashCents,
     peakEquityCents: account.peakEquityCents,
     dayPnlCents,
     weekPnlCents,
@@ -76,49 +124,54 @@ export async function getDesk() {
     drawdown: account.peakEquityCents > 0 ? (account.peakEquityCents - account.equityCents) / account.peakEquityCents : 0,
     openRiskCents,
     openRiskLimitCents: riskBudgetCents(account.equityCents, RISK_LIMITS.maxTotalOpenRisk),
-    tradesToday: account.sessions[0]?.sessionDate === clock.dateKey ? account.sessions[0].tradesTaken : 0,
+    accountOpenPositions: engineOpen.length,
+    tradesToday: session?.tradesTaken ?? 0,
     heartbeat,
     robinhood: robinhoodStatus(),
     alpaca: alpacaStatus(),
     limits: RISK_LIMITS,
-    session: account.sessions[0]
+    session: session
       ? {
-          date: account.sessions[0].sessionDate,
-          orHigh: account.sessions[0].orHigh,
-          orLow: account.sessions[0].orLow,
-          vwap: account.sessions[0].vwap,
-          standDown: account.sessions[0].standDown,
-          consecutiveLosses: account.sessions[0].consecutiveLosses,
-          longStopped: account.sessions[0].longStopped,
+          date: session.sessionDate,
+          orHigh: session.orHigh,
+          orLow: session.orLow,
+          vwap: session.vwap,
+          standDown: session.standDown,
+          consecutiveLosses: session.consecutiveLosses,
+          longStopped: session.longStopped,
         }
       : null,
     holdings: account.holdings.map((holding) => {
-      const mark = holding.symbol === "SPY" && spy ? spy : holding.marketPrice;
+      const price = holding.symbol === asset.symbol && mark ? mark : holding.marketPrice;
       return {
         symbol: holding.symbol,
         quantity: holding.quantity,
         averagePrice: holding.averagePrice,
-        marketPrice: mark,
+        marketPrice: price,
         origin: holding.origin,
         tradable: holding.tradable,
-        marketValueCents: Math.round(holding.quantity * mark * 100),
-        unrealizedCents: Math.round((mark - holding.averagePrice) * holding.quantity * 100),
+        marketValueCents: Math.round(holding.quantity * price * 100),
+        unrealizedCents: Math.round((price - holding.averagePrice) * holding.quantity * 100),
       };
     }),
-    openTrades: openTrades.map((trade) => ({
-      id: trade.id,
-      symbol: trade.symbol,
-      side: trade.side,
-      quantity: trade.quantity,
-      entryPrice: trade.entryPrice,
-      stopPrice: trade.stopPrice,
-      targetPrice: trade.targetPrice,
-      setup: trade.setup,
-      origin: trade.origin,
-      openedAt: trade.openedAt.toISOString(),
-      unrealizedCents: Math.round(((spy ?? trade.entryPrice) - trade.entryPrice) * trade.quantity * (trade.side === "LONG" ? 1 : -1) * 100),
-    })),
-    recentTrades: account.trades.map((trade) => ({
+    openTrades: engineOpen
+      .filter((trade) => trade.symbol === asset.symbol)
+      .map((trade) => ({
+        id: trade.id,
+        symbol: trade.symbol,
+        side: trade.side,
+        quantity: trade.quantity,
+        entryPrice: trade.entryPrice,
+        stopPrice: trade.stopPrice,
+        targetPrice: trade.targetPrice,
+        setup: trade.setup,
+        origin: trade.origin,
+        openedAt: trade.openedAt.toISOString(),
+        unrealizedCents: Math.round(
+          ((mark ?? trade.entryPrice) - trade.entryPrice) * trade.quantity * (trade.side === "LONG" ? 1 : -1) * 100,
+        ),
+      })),
+    recentTrades: assetTrades.map((trade) => ({
       id: trade.id,
       symbol: trade.symbol,
       side: trade.side,
@@ -133,10 +186,11 @@ export async function getDesk() {
       setup: trade.setup,
       origin: trade.origin,
       journal: trade.journal,
+      priorBook: resetAt != null && trade.openedAt < resetAt,
       openedAt: trade.openedAt.toISOString(),
       closedAt: trade.closedAt?.toISOString() ?? null,
     })),
-    orders: account.orders.map((order) => ({
+    orders: assetOrders.map((order) => ({
       id: order.id,
       symbol: order.symbol,
       side: order.side,
@@ -151,21 +205,30 @@ export async function getDesk() {
       filledAt: order.filledAt?.toISOString() ?? null,
       sample: order.brokerOrderId == null,
     })),
-    events: account.events.map((event) => ({
-      id: event.id,
-      level: event.level,
-      kind: event.kind,
-      message: event.message,
-      createdAt: event.createdAt.toISOString(),
-    })),
-    decisions: account.decisions.map((decision) => ({
-      id: decision.id,
-      approved: decision.approved,
-      reasons: decision.reasons,
-      createdAt: decision.createdAt.toISOString(),
-    })),
-    snapshots: account.snapshots
-      .map((snapshot) => ({ t: snapshot.capturedAt.getTime(), equityCents: snapshot.equityCents }))
+    events: account.events
+      .filter((event) => eventForAsset(event.message, event.kind, asset))
+      .map((event) => ({
+        id: event.id,
+        level: event.level,
+        kind: event.kind,
+        message: event.message,
+        createdAt: event.createdAt.toISOString(),
+      })),
+    decisions: account.decisions
+      .filter((decision) => {
+        const symbol = proposalSymbol(decision.proposal);
+        if (symbol == null) return asset.symbol === "SPY";
+        return symbol === asset.symbol;
+      })
+      .slice(0, 12)
+      .map((decision) => ({
+        id: decision.id,
+        approved: decision.approved,
+        reasons: decision.reasons,
+        createdAt: decision.createdAt.toISOString(),
+      })),
+    snapshots: snapshots
+      .map((row) => ({ t: row.capturedAt.getTime(), equityCents: row.equityCents }))
       .reverse(),
     spyBars: {
       daily: dailyBars.map(candle).reverse(),

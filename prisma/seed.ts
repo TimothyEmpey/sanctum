@@ -15,7 +15,7 @@ async function main() {
     },
   });
 
-  const cashCents = 10_000_000;
+  const cashCents = 100_000;
   await prisma.account.create({
     data: {
       userId: user.id,
@@ -27,6 +27,7 @@ async function main() {
       dayStartEquityCents: cashCents,
       weekStartEquityCents: cashCents,
       baselineSpyShares: 0,
+      bookResetAt: new Date(),
     },
   });
 

@@ -15,20 +15,22 @@ type Pose =
   | "walk-left"
   | "disappointed";
 
-const art = "?v=4";
-
-const sprite: Record<Pose, string> = {
-  idle: `/uriel/idle.png${art}`,
-  walk: `/uriel/walk.png${art}`,
-  look: `/uriel/look.png${art}`,
-  happy: `/uriel/happy.png${art}`,
-  sit: `/uriel/sit.png${art}`,
-  sleep: `/uriel/sleep.png${art}`,
-  eat: `/uriel/eat.png${art}`,
-  magic: `/uriel/magic.png${art}`,
-  "walk-left": `/uriel/walk-left.png${art}`,
-  disappointed: `/uriel/disappointed.png${art}`,
-};
+function spritesFor(pet: "uriel" | "fonzo"): Record<Pose, string> {
+  const folder = pet === "fonzo" ? "fonzo" : "uriel";
+  const art = pet === "fonzo" ? "?v=1" : "?v=4";
+  return {
+    idle: `/${folder}/idle.png${art}`,
+    walk: `/${folder}/walk.png${art}`,
+    look: `/${folder}/look.png${art}`,
+    happy: `/${folder}/happy.png${art}`,
+    sit: `/${folder}/sit.png${art}`,
+    sleep: `/${folder}/sleep.png${art}`,
+    eat: `/${folder}/eat.png${art}`,
+    magic: `/${folder}/magic.png${art}`,
+    "walk-left": `/${folder}/walk-left.png${art}`,
+    disappointed: `/${folder}/disappointed.png${art}`,
+  };
+}
 
 function moods(tone: Tone): Pose[] {
   if (tone === "halted") return ["disappointed", "disappointed", "sit", "look"];
@@ -41,7 +43,8 @@ function pick<T>(items: T[]) {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-export function UrielMark({ tone }: { tone: Tone }) {
+export function UrielMark({ tone, pet = "uriel" }: { tone: Tone; pet?: "uriel" | "fonzo" }) {
+  const sprite = spritesFor(pet);
   const toneRef = useRef(tone);
   toneRef.current = tone;
   const roamRef = useRef<() => void>(() => {});

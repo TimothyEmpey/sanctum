@@ -1,10 +1,16 @@
 import { sessionClock } from "@/lib/market/calendar";
+import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { PDT_EQUITY_CENTS, PDT_MAX_DAY_TRADES, RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
-import { dollarRiskCents, notionalCents, riskBudgetCents, sharesForRisk } from "@/lib/risk/sizing";
+import { dollarRiskCents, notionalCents, quantityForRisk, riskBudgetCents, sharesForRisk } from "@/lib/risk/sizing";
 import type { RiskDecision, RiskState, TradeProposal } from "@/lib/risk/types";
 
 function lossRemaining(startCents: number, pnlCents: number, limit: number) {
   return Math.floor(startCents * limit + 1e-6) + pnlCents;
+}
+
+function floorToStep(raw: number, step: number) {
+  if (!(raw > 0) || !(step > 0)) return 0;
+  return Math.round(Math.floor((raw + 1e-9) / step) * step * 1e8) / 1e8;
 }
 
 /**
@@ -14,12 +20,15 @@ function lossRemaining(startCents: number, pnlCents: number, limit: number) {
 export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDecision {
   const reasons: string[] = [];
   const clock = sessionClock(proposal.now);
+  const step = proposal.quantityStep ?? 1;
   const distance = Math.abs(proposal.entryPrice - proposal.stopPrice);
-  const { shares: maxShares, budgetCents } = sharesForRisk(
-    state.equityCents,
-    proposal.entryPrice,
-    proposal.stopPrice,
-  );
+  const allowed = (state.allowedSymbols ?? [TRADABLE_SYMBOL]).map((symbol) => symbol.toUpperCase());
+  const sized =
+    step >= 1
+      ? sharesForRisk(state.equityCents, proposal.entryPrice, proposal.stopPrice)
+      : quantityForRisk(state.equityCents, proposal.entryPrice, proposal.stopPrice, step);
+  const maxShares = sized.shares;
+  const budgetCents = sized.budgetCents;
   const dayPnl = state.equityCents - state.dayStartEquityCents;
   const weekPnl = state.equityCents - state.weekStartEquityCents;
   const drawdown =
@@ -29,8 +38,8 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
 
   let shares = proposal.requestedShares;
 
-  if (proposal.symbol.toUpperCase() !== TRADABLE_SYMBOL) {
-    reasons.push(`${proposal.symbol} is untouchable. Uriel may trade SPY only.`);
+  if (!allowed.includes(proposal.symbol.toUpperCase())) {
+    reasons.push(`${proposal.symbol} is untouchable. This worker cannot trade it.`);
   }
   if (!Number.isFinite(proposal.stopPrice) || distance <= 0) {
     reasons.push("Every trade must have a stop-loss before entry.");
@@ -50,19 +59,30 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   if (proposal.side === "SHORT" && !state.shortingEnabled) {
     reasons.push("Short sales are off. The Robinhood agent path is long-only.");
   }
-  if (!Number.isInteger(shares) || shares < 1) {
-    reasons.push("Position size must be a whole number of shares.");
+  const wholeShares = step >= 1;
+  if (wholeShares) {
+    if (!Number.isInteger(shares) || shares < 1) {
+      reasons.push("Position size must be a whole number of shares.");
+    }
+  } else if (!(shares > 0)) {
+    reasons.push("Position size must be positive.");
   }
   let heldToLastLoss = false;
-  if (state.lastTradeWasLoss && state.lastTradeShares != null && state.lastTradeShares >= 1 && shares > state.lastTradeShares) {
-    shares = state.lastTradeShares;
+  const minQty = wholeShares ? 1 : step;
+  if (
+    state.lastTradeWasLoss &&
+    state.lastTradeShares != null &&
+    state.lastTradeShares + 1e-9 >= minQty &&
+    shares > state.lastTradeShares + 1e-9
+  ) {
+    shares = floorToStep(state.lastTradeShares, step);
     heldToLastLoss = true;
   }
   if (shares > maxShares) {
     reasons.push("Position size exceeds the risk formula.");
   }
   if (state.spyPositionOpen) {
-    reasons.push("No averaging down, and no second SPY position while one is open.");
+    reasons.push(`No averaging down, and no second ${proposal.symbol} position while one is open.`);
   }
   if (state.openPositions >= RISK_LIMITS.maxOpenPositions) {
     reasons.push("Maximum open positions reached.");
@@ -73,9 +93,11 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   if (state.consecutiveLosses >= 2) {
     reasons.push("Revenge-trading lockout after two consecutive losses.");
   }
-  if (state.agentPaused) reasons.push("Uriel is paused.");
+  if (state.agentPaused) reasons.push(proposal.market === "crypto" ? "Fonzo is paused." : "Uriel is paused.");
   if (state.haltReason) reasons.push(`Trading halted: ${state.haltReason}`);
-  if (!clock.entryWindowOpen) reasons.push(`New positions are closed during ${clock.phase}.`);
+  const windowOpen = proposal.market === "crypto" ? cryptoSessionClock(proposal.now).entryWindowOpen : clock.entryWindowOpen;
+  const phaseLabel = proposal.market === "crypto" ? cryptoSessionClock(proposal.now).phase : clock.phase;
+  if (!windowOpen) reasons.push(`New positions are closed during ${phaseLabel}.`);
   if (dayPnl <= -riskBudgetCents(state.dayStartEquityCents, RISK_LIMITS.maxDailyLoss)) {
     reasons.push("Daily loss limit reached. No new positions.");
   }
@@ -85,7 +107,7 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   if (drawdown >= RISK_LIMITS.maxDrawdownFromPeak - 1e-12) {
     reasons.push("Drawdown from peak equity reached 5.0%.");
   }
-  if (state.equityCents < PDT_EQUITY_CENTS && state.dayTradesInPdtWindow >= PDT_MAX_DAY_TRADES) {
+  if (proposal.market !== "crypto" && state.equityCents < PDT_EQUITY_CENTS && state.dayTradesInPdtWindow >= PDT_MAX_DAY_TRADES) {
     reasons.push("Pattern day trader limit: 3 day trades in 5 business days under $25,000.");
   }
 
@@ -96,15 +118,19 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
       0,
       riskBudgetCents(state.equityCents, RISK_LIMITS.maxTotalOpenRisk) - state.openRiskCents,
     );
-    const byOpenRisk = distance > 0 ? Math.floor(openRoomCents / 100 / distance) : 0;
+    const byOpenRisk = distance > 0 ? floorToStep(openRoomCents / 100 / distance, step) : 0;
     const byCash =
       proposal.side === "LONG" && proposal.entryPrice > 0
-        ? Math.floor(state.cashCents / 100 / proposal.entryPrice)
+        ? floorToStep(state.cashCents / 100 / proposal.entryPrice, step)
         : shares;
     const fitted = Math.min(shares, maxShares, byOpenRisk, byCash);
-    if (fitted < 1) {
-      reasons.push("Available cash or open-risk budget cannot fund one share.");
-    } else if (fitted < shares) {
+    if (fitted + 1e-9 < minQty) {
+      reasons.push(
+        wholeShares
+          ? "Available cash or open-risk budget cannot fund one share."
+          : "Available cash or open-risk budget cannot fund the minimum quantity.",
+      );
+    } else if (fitted + 1e-9 < shares) {
       shares = fitted;
       reasons.push("Position size reduced to the cash and open-risk budget.");
     } else {
@@ -114,12 +140,12 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   }
 
   const riskCents = dollarRiskCents(Math.max(shares, 0), proposal.entryPrice, proposal.stopPrice);
-  if (!hardReject && shares >= 1 && riskCents > budgetCents) {
+  if (!hardReject && shares + 1e-9 >= minQty && riskCents > budgetCents) {
     reasons.push("Dollar risk exceeds 2% of equity.");
   }
 
   const blocking = reasons.filter((reason) => !reason.startsWith("Position size reduced"));
-  const approved = blocking.length === 0 && shares >= 1;
+  const approved = blocking.length === 0 && shares + 1e-9 >= minQty;
 
   return {
     approved,

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { AuthError } from "next-auth";
+import { assetBySymbol, normalizeSymbol } from "@/lib/assets";
 import { auth, signIn, signOut } from "@/auth";
 import { prisma } from "@/server/db";
 import { flattenAgentTrades } from "@/server/trading";
@@ -31,30 +32,40 @@ export async function signOutDesk() {
   await signOut({ redirectTo: "/login" });
 }
 
-export async function togglePause() {
+export async function togglePause(formData: FormData) {
   const account = await requireAccount();
-  const paused = !account.agentPaused;
-  await prisma.account.update({ where: { id: account.id }, data: { agentPaused: paused } });
+  const fonzo = String(formData.get("desk") ?? "uriel") === "fonzo";
+  const paused = fonzo ? !account.fonzoPaused : !account.agentPaused;
+  const name = fonzo ? "Fonzo" : "Uriel";
+  await prisma.account.update({
+    where: { id: account.id },
+    data: fonzo ? { fonzoPaused: paused } : { agentPaused: paused },
+  });
   await prisma.agentEvent.create({
     data: {
       accountId: account.id,
       kind: "CONTROL",
       level: "info",
-      message: paused ? "Uriel paused. No new entries." : "Uriel resumed. Entries follow the risk engine.",
+      message: paused ? `${name} paused. No new entries.` : `${name} resumed. Entries follow the risk engine.`,
     },
   });
   revalidatePath("/", "layout");
 }
 
-export async function flattenNow() {
+export async function flattenNow(formData: FormData) {
   const account = await requireAccount();
-  const closed = await flattenAgentTrades(account.id, new Date(), "FLATTEN");
+  const symbol = normalizeSymbol(String(formData.get("symbol") ?? "SPY"));
+  const asset = assetBySymbol(symbol);
+  if (!asset) throw new Error("That symbol is not tradable.");
+  const closed = await flattenAgentTrades(account.id, new Date(), "FLATTEN", { symbols: [asset.symbol] });
   await prisma.agentEvent.create({
     data: {
       accountId: account.id,
       kind: "FLATTEN",
       level: "info",
-      message: closed ? `Flattened ${closed} SPY day trade${closed === 1 ? "" : "s"}.` : "No agent SPY position was open.",
+      message: closed.length
+        ? `Flattened ${closed.length} ${asset.symbol} position${closed.length === 1 ? "" : "s"}.`
+        : `No agent ${asset.symbol} position was open.`,
     },
   });
   revalidatePath("/", "layout");

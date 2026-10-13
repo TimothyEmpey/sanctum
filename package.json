@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "bin": {
-    "uriel": "./bin/uriel"
+    "uriel": "./bin/uriel",
+    "fonzo": "./bin/fonzo",
+    "sanctum": "./bin/sanctum"
   },
   "scripts": {
     "dev": "next dev --turbopack",

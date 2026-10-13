@@ -5,42 +5,49 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { formatPx, formatUsd } from "@/lib/market/time";
 import { getDesk } from "@/server/desk";
 
-export default async function DashboardPage() {
-  const desk = await getDesk();
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ book?: string; asset?: string }>;
+}) {
+  const desk = await getDesk(await searchParams);
   if (!desk) return <p>Seed the paper account before opening the desk.</p>;
-  const quiet = desk.clock.phase === "closed" || desk.clock.phase === "idle";
+  const quiet =
+    desk.assetClass === "crypto"
+      ? desk.clock.phase === "signal" || desk.clock.phase === "wait"
+      : desk.clock.phase === "closed" || desk.clock.phase === "idle";
   const freshFor = quiet ? 75 * 60_000 : 90_000;
   const workerFresh = desk.heartbeat ? Date.now() - new Date(desk.heartbeat.at).getTime() < freshFor : false;
 
   return (
     <div className="space-y-5">
       <div>
-        <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">SPY desk</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{desk.assetLabel} desk</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Dashboard</h1>
         <p className="mt-1 text-sm text-[var(--muted)]">{desk.clock.label} · {desk.strategy}</p>
       </div>
-      <BookBanner mode={desk.mode} demo={desk.demo} />
+      <BookBanner mode={desk.mode} demo={desk.demo} brokerEquityCents={desk.brokerEquityCents} />
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Account equity" value={formatUsd(desk.equityCents)} hint={`Peak ${formatUsd(desk.peakEquityCents)}`} />
         <Metric label="Today's P&L" value={formatUsd(desk.dayPnlCents, true)} tone={moneyTone(desk.dayPnlCents)} />
         <Metric label="Daily loss remaining" value={formatUsd(desk.dailyLossRemainingCents)} hint="5% of starting-day equity" />
         <Metric label="Open risk" value={formatUsd(desk.openRiskCents)} hint={`Cap ${formatUsd(desk.openRiskLimitCents)}`} />
         <Metric label="Buying power" value={formatUsd(desk.cashCents)} hint="Cash only. Margin is not used." />
-        <Metric label="Open positions" value={String(desk.openTrades.length)} hint={`${desk.tradesToday} of ${desk.limits.maxTradesPerDay} entries today`} />
+        <Metric label="Open positions" value={String(desk.accountOpenPositions)} hint={`${desk.tradesToday} of ${desk.limits.maxTradesPerDay} ${desk.symbol} entries today. The $1,000 book is shared.`} />
         <Metric label="Active orders" value={String(desk.orders.filter((order) => order.status === "WORKING").length)} />
         <Metric label="Week P&L" value={formatUsd(desk.weekPnlCents, true)} tone={moneyTone(desk.weekPnlCents)} />
       </section>
       <section className="grid gap-4 lg:grid-cols-5">
         <Card className="min-w-0 lg:col-span-3">
           <div className="mb-3 flex items-baseline justify-between">
-            <CardTitle>SPY</CardTitle>
-            <p className="tabular text-lg font-semibold">{desk.spy == null ? "—" : formatPx(desk.spy)}</p>
+            <CardTitle>{desk.assetLabel}</CardTitle>
+            <p className="tabular text-lg font-semibold">{desk.mark == null ? "—" : formatPx(desk.mark)}</p>
           </div>
           <PriceChart daily={desk.spyBars.daily} minute={desk.spyBars.minute} />
         </Card>
         <Card className="space-y-3 lg:col-span-2">
           <CardTitle>Status</CardTitle>
-          <StatusRow label="Uriel" value={workerFresh ? (desk.paused ? "Paused" : "Running") : "Worker offline"} />
+          <StatusRow label={desk.workerName} value={workerFresh ? (desk.paused ? "Paused" : "Running") : "Worker offline"} />
           <StatusRow label="Risk engine" value={desk.haltReason ?? "Clear"} />
           <StatusRow label="Broker" value={desk.mode === "ALPACA_PAPER" ? "Alpaca paper" : desk.mode === "PAPER" ? "Paper ledger" : "Robinhood"} />
           <StatusRow label="Alpaca" value={desk.alpaca.configured ? "Paper connected" : "Not connected"} />

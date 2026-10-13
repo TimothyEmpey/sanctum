@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import { DeskShell } from "@/components/desk-shell";
 import { getDesk } from "@/server/desk";
 
@@ -5,6 +6,11 @@ export const dynamic = "force-dynamic";
 
 export default async function DeskLayout({ children }: { children: React.ReactNode }) {
   const desk = await getDesk();
-  const tone = desk?.haltReason ? "halted" : desk?.paused ? "paused" : desk?.clock.tradingDay ? "live" : "idle";
-  return <DeskShell tone={tone}>{children}</DeskShell>;
+  return (
+    <Suspense>
+      <DeskShell halt={Boolean(desk?.haltReason)} urielPaused={Boolean(desk?.urielPaused)} fonzoPaused={Boolean(desk?.fonzoPaused)} stockLive={Boolean(desk?.stockLive)}>
+        {children}
+      </DeskShell>
+    </Suspense>
+  );
 }

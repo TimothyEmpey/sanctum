@@ -18,6 +18,10 @@ worker_pids() {
   pgrep -f 'src/worker\.ts' || true
 }
 
+fonzo_pids() {
+  pgrep -f 'src/fonzo-worker\.ts' || true
+}
+
 desk_pids() {
   {
     pgrep -f "$root/node_modules/.bin/next dev" || true
@@ -91,6 +95,17 @@ start_desk() {
   exit 1
 }
 
+start_fonzo() {
+  if [[ -n "$(fonzo_pids)" ]]; then
+    echo "Fonzo worker is already running."
+    return
+  fi
+  mkdir -p "$root/data"
+  nohup "$root/node_modules/.bin/tsx" --tsconfig "$root/tsconfig.json" "$root/src/fonzo-worker.ts" >>"$root/data/fonzo-worker.log" 2>&1 &
+  echo $! >"$root/data/fonzo-worker.pid"
+  echo "Fonzo worker started."
+}
+
 stop_worker() {
   local pids
   pids="$(worker_pids)"
@@ -102,6 +117,19 @@ stop_worker() {
   stop_pids "$pids" worker_pids
   rm -f "$root/data/worker.pid"
   echo "Uriel worker stopped."
+}
+
+stop_fonzo() {
+  local pids
+  pids="$(fonzo_pids)"
+  if [[ -z "$pids" ]]; then
+    rm -f "$root/data/fonzo-worker.pid"
+    echo "Fonzo worker is not running."
+    return
+  fi
+  stop_pids "$pids" fonzo_pids
+  rm -f "$root/data/fonzo-worker.pid"
+  echo "Fonzo worker stopped."
 }
 
 stop_desk() {
@@ -118,14 +146,43 @@ stop_desk() {
 }
 
 command_name="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
+desk="$(printf '%s' "${SANCTUM_DESK:-uriel}" | tr '[:upper:]' '[:lower:]')"
 if [[ "$command_name" == "start" ]]; then
-  start_worker
+  case "$desk" in
+    fonzo) start_fonzo ;;
+    sanctum)
+      start_worker
+      start_fonzo
+      ;;
+    *) start_worker ;;
+  esac
   start_desk
   exit 0
 fi
 if [[ "$command_name" == "end" || "$command_name" == "stop" ]]; then
-  stop_worker
-  stop_desk
+  case "$desk" in
+    fonzo)
+      stop_fonzo
+      if [[ -n "$(worker_pids)" ]]; then
+        echo "Desk left up because Uriel is running."
+      else
+        stop_desk
+      fi
+      ;;
+    sanctum)
+      stop_fonzo
+      stop_worker
+      stop_desk
+      ;;
+    *)
+      stop_worker
+      if [[ -n "$(fonzo_pids)" ]]; then
+        echo "Desk left up because Fonzo is running."
+      else
+        stop_desk
+      fi
+      ;;
+  esac
   exit 0
 fi
 

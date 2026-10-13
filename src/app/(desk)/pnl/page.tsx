@@ -6,10 +6,16 @@ import { formatUsd } from "@/lib/market/time";
 import { engineClosed, sampleClosed, summarizeRealized } from "@/lib/portfolio/pnl";
 import { getDesk } from "@/server/desk";
 
-export default async function PnlPage() {
-  const desk = await getDesk();
+export default async function PnlPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ book?: string; asset?: string }>;
+}) {
+  const desk = await getDesk(await searchParams);
   if (!desk) return <p>Seed the paper account before opening the desk.</p>;
-  const closed = engineClosed(desk.recentTrades);
+  const sleeve = engineClosed(desk.recentTrades).filter((trade) => !trade.priorBook);
+  const prior = engineClosed(desk.recentTrades).filter((trade) => trade.priorBook);
+  const closed = sleeve;
   const samples = sampleClosed(desk.recentTrades);
   const { wins, losses, realized, grossWin, grossLoss, avgR } = summarizeRealized(closed);
   const byDay = new Map<string, number>();
@@ -27,10 +33,11 @@ export default async function PnlPage() {
       <div>
         <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Results</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">P&L</h1>
+        <p className="mt-1 text-sm text-[var(--muted)]">{desk.assetLabel} since the $1,000 book. Portfolio equity is the shared book.</p>
       </div>
-      <BookBanner mode={desk.mode} demo={desk.demo} />
+      <BookBanner mode={desk.mode} demo={desk.demo} brokerEquityCents={desk.brokerEquityCents} />
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <Metric label="Realized P&L" value={formatUsd(realized, true)} tone={moneyTone(realized)} hint="Uriel fills only." />
+        <Metric label="Realized P&L" value={formatUsd(realized, true)} tone={moneyTone(realized)} hint={`${desk.workerName} fills in this book.`} />
         <Metric label="Win rate" value={closed.length ? `${Math.round((wins / closed.length) * 100)}%` : "—"} hint={`${wins} wins · ${losses} losses`} />
         <Metric label="Average R" value={closed.length ? avgR.toFixed(2) : "—"} />
         <Metric label="Profit factor" value={grossLoss ? (grossWin / grossLoss).toFixed(2) : "—"} />
@@ -44,7 +51,7 @@ export default async function PnlPage() {
       <Card>
         <CardTitle>Closed trades</CardTitle>
         <div className="mt-3 space-y-3">
-          {closed.length === 0 ? <p className="text-sm text-[var(--muted)]">No Uriel trades closed yet.</p> : null}
+          {closed.length === 0 ? <p className="text-sm text-[var(--muted)]">No {desk.workerName} trades closed in this book yet.</p> : null}
           {closed.map((trade) => (
             <div key={trade.id} className="border-b border-[var(--border)] pb-3 text-sm last:border-0">
               <div className="flex items-center justify-between gap-3">
@@ -58,6 +65,22 @@ export default async function PnlPage() {
           ))}
         </div>
       </Card>
+      {prior.length > 0 ? (
+        <Card>
+          <CardTitle>Earlier book</CardTitle>
+          <p className="mt-2 text-xs text-[var(--muted)]">These closes happened before the working book was set to $1,000. They stay in the log and are not in the realized total.</p>
+          <div className="mt-3 space-y-3">
+            {prior.map((trade) => (
+              <div key={trade.id} className="flex items-center justify-between gap-3 border-b border-[var(--border)] pb-3 text-sm last:border-0">
+                <span>{trade.quantity} {trade.symbol} {trade.setup}</span>
+                <span className={trade.realizedPnlCents >= 0 ? "text-[var(--positive)]" : "text-[var(--negative)]"}>
+                  {formatUsd(trade.realizedPnlCents, true)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      ) : null}
       {samples.length > 0 ? (
         <Card>
           <CardTitle>Sample trades</CardTitle>

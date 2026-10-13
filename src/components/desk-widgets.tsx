@@ -1,5 +1,6 @@
 import type { Desk } from "@/server/desk";
-import { formatPx, formatUsd } from "@/lib/market/time";
+import { assetBySymbol } from "@/lib/assets";
+import { formatPx, formatQty, formatUsd } from "@/lib/market/time";
 import { Badge } from "@/components/ui/badge";
 import { MOMENTUM_SETUP } from "@/lib/strategy/intraday-momentum";
 import { Card, CardTitle } from "@/components/ui/card";
@@ -7,16 +8,17 @@ import { Card, CardTitle } from "@/components/ui/card";
 export function DemoBanner() {
   return (
     <div className="rounded-2xl border border-[var(--border)] bg-[color-mix(in_oklab,var(--primary)_10%,transparent)] px-4 py-3 text-sm">
-      Paper demo book. These holdings and sample prints are not your brokerage account. Uriel cannot sell anything except SPY shares it buys, and live orders stay off.
+      Paper demo book. These holdings and sample prints are not your brokerage account. Live orders stay off.
     </div>
   );
 }
 
-export function BookBanner({ mode, demo }: { mode: string; demo: boolean }) {
+export function BookBanner({ mode, demo, brokerEquityCents }: { mode: string; demo: boolean; brokerEquityCents: number | null }) {
   if (mode === "ALPACA_PAPER") {
+    const broker = brokerEquityCents == null ? "a larger Alpaca paper account" : `Alpaca paper at ${formatUsd(brokerEquityCents)}`;
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[color-mix(in_oklab,var(--primary)_10%,transparent)] px-4 py-3 text-sm">
-        Alpaca paper account. Equity, cash, and positions come from that account. Uriel sells only SPY shares it buys, and it sizes from cash rather than margin.
+        The working book is $1,000 and is shared by Uriel and Fonzo. Orders size from this cash. Margin is not used. The broker is {broker}, and that account is not reset.
       </div>
     );
   }
@@ -42,30 +44,34 @@ export function moneyTone(cents: number): "good" | "bad" | undefined {
   return undefined;
 }
 
-function OriginBadge({ origin }: { origin: string }) {
-  const label = origin === "UNTOUCHABLE" ? "Locked" : origin === "BASELINE" ? "Reserved" : origin === "DEMO" ? "Sample" : "Uriel";
+function OriginBadge({ origin, symbol }: { origin: string; symbol?: string }) {
+  const desk = symbol ? assetBySymbol(symbol)?.desk : null;
+  const label =
+    origin === "UNTOUCHABLE" ? "Locked" : origin === "BASELINE" ? "Reserved" : origin === "DEMO" ? "Sample" : desk === "fonzo" ? "Fonzo" : "Uriel";
   return <Badge>{label}</Badge>;
 }
 
 export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; includeUntouchable?: boolean }) {
-  const baseline = desk.holdings.filter((holding) => holding.origin === "BASELINE");
+  const baseline = desk.holdings.filter((holding) => holding.origin === "BASELINE" && holding.symbol === desk.symbol);
   const locked = desk.holdings.filter((holding) => holding.origin === "UNTOUCHABLE");
+  const exitLine = (setup: string) =>
+    setup === MOMENTUM_SETUP ? "exit at the cash close" : setup === "CRYPTO_LAST_HALF" ? "exit at 24:00 UTC" : null;
   return (
     <div className="space-y-4">
       <Card>
         <CardTitle>Open positions</CardTitle>
         <div className="mt-3 space-y-2">
           {desk.openTrades.length === 0 && baseline.length === 0 ? (
-            <p className="text-sm text-[var(--muted)]">No open SPY day trade.</p>
+            <p className="text-sm text-[var(--muted)]">No open {desk.symbol} position.</p>
           ) : null}
           {desk.openTrades.map((trade) => (
             <PositionRow
               key={trade.id}
               symbol={trade.symbol}
               detail={
-                trade.setup === MOMENTUM_SETUP
-                  ? `${trade.side} ${trade.quantity} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · exit at the cash close`
-                  : `${trade.side} ${trade.quantity} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · target ${formatPx(trade.targetPrice)}`
+                exitLine(trade.setup)
+                  ? `${trade.side} ${formatQty(trade.quantity)} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · ${exitLine(trade.setup)}`
+                  : `${trade.side} ${formatQty(trade.quantity)} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · target ${formatPx(trade.targetPrice)}`
               }
               value={formatUsd(trade.unrealizedCents, true)}
               origin={trade.origin}
@@ -85,7 +91,7 @@ export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; 
       {includeUntouchable ? (
         <Card>
           <CardTitle>Untouchable holdings</CardTitle>
-          <p className="mt-1 text-xs text-[var(--muted)]">Anything other than SPY and USD is display-only. Uriel cannot sell these.</p>
+          <p className="mt-1 text-xs text-[var(--muted)]">Anything outside SPY, QQQ, BTC, and ETH is display-only. The workers cannot sell these.</p>
           <div className="mt-3 space-y-2">
             {locked.length === 0 ? <p className="text-sm text-[var(--muted)]">No outside holdings in this book.</p> : null}
             {locked.map((holding) => (
@@ -104,17 +110,13 @@ export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; 
   );
 }
 
-function formatQty(value: number) {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 4 });
-}
-
 function PositionRow({ symbol, detail, value, origin }: { symbol: string; detail: string; value: string; origin: string }) {
   return (
     <div className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--border)] px-3 py-3">
       <div>
         <div className="flex items-center gap-2">
           <span className="font-medium">{symbol}</span>
-          <OriginBadge origin={origin} />
+          <OriginBadge origin={origin} symbol={symbol} />
         </div>
         <p className="mt-1 text-xs text-[var(--muted)]">{detail}</p>
       </div>
@@ -140,7 +142,7 @@ export function FillTape({ desk }: { desk: Desk }) {
                 <span className="text-[var(--muted)]">{order.purpose}</span>
               </div>
               <p className="mt-1 text-xs text-[var(--muted)]">
-                {order.quantity} @ {order.fillPrice == null ? "—" : formatPx(order.fillPrice)} · {new Date(order.filledAt ?? order.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                {formatQty(order.quantity)} @ {order.fillPrice == null ? "—" : formatPx(order.fillPrice)} · {new Date(order.filledAt ?? order.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
               </p>
             </div>
             <span className="text-xs uppercase tracking-wide text-[var(--muted)]">{order.status}</span>

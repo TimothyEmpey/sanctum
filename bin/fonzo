@@ -1,0 +1,12 @@
+#!/bin/bash
+# Fonzo commands. The desk name is set before bin/uriel follows its own symlink.
+set -euo pipefail
+source="${BASH_SOURCE[0]}"
+while [ -L "$source" ]; do
+  dir="$(cd "$(dirname "$source")" && pwd)"
+  source="$(readlink "$source")"
+  [[ "$source" != /* ]] && source="$dir/$source"
+done
+root="$(cd "$(dirname "$source")/.." && pwd)"
+export SANCTUM_DESK=fonzo
+exec "$root/bin/uriel" "$@"

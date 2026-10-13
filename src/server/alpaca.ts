@@ -1,6 +1,5 @@
-import { assertTradableSymbol } from "@/lib/broker/firewall";
-import { etParts } from "@/lib/market/time";
-import { TRADABLE_SYMBOL } from "@/lib/risk/constants";
+import { assetBySymbol, normalizeSymbol } from "@/lib/assets";
+import { assertTradableSymbol, UntouchableSymbolError } from "@/lib/broker/firewall";
 import { prisma } from "@/server/db";
 
 const PAPER_HOST = "paper-api.alpaca.markets";
@@ -63,7 +62,7 @@ export function alpacaStatus(): AlpacaStatus {
   }
   return {
     configured: true,
-    detail: "Alpaca paper is connected. Orders go to the paper host only. Uriel sizes from cash, not margin buying power.",
+    detail: "Alpaca paper is connected. Orders use the $1,000 working book, not margin, and the Alpaca account is not reset.",
   };
 }
 
@@ -75,9 +74,9 @@ export function paperBracketOrder(input: {
   targetPrice: number;
   clientOrderId: string;
 }) {
-  assertTradableSymbol(input.symbol);
+  if (input.symbol !== "SPY" && input.symbol !== "QQQ") throw new UntouchableSymbolError(input.symbol);
   if (!Number.isInteger(input.quantity) || input.quantity < 1) {
-    throw new Error("Alpaca paper orders must be a positive whole number of SPY shares.");
+    throw new Error("Alpaca paper stock orders must be a positive whole number of shares.");
   }
   if (!(input.stopPrice > 0) || input.stopPrice >= input.limitPrice) {
     throw new Error("Refusing a paper order without a stop below the limit.");
@@ -86,7 +85,7 @@ export function paperBracketOrder(input: {
     throw new Error("Refusing a paper order without a target above the limit.");
   }
   return {
-    symbol: TRADABLE_SYMBOL,
+    symbol: input.symbol,
     qty: String(input.quantity),
     side: "buy",
     type: "limit",
@@ -148,6 +147,12 @@ export function getPaperOrder(orderId: string) {
   return alpacaFetch<AlpacaOrder>(`/v2/orders/${encodeURIComponent(orderId)}?nested=true`);
 }
 
+export function getPaperOrderByClientId(clientOrderId: string) {
+  return alpacaFetch<AlpacaOrder>(
+    `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`,
+  );
+}
+
 export function cancelPaperOrder(orderId: string) {
   return alpacaFetch<unknown>(`/v2/orders/${encodeURIComponent(orderId)}`, { method: "DELETE" });
 }
@@ -166,19 +171,67 @@ export function replacePaperLimit(orderId: string, limitPrice: number) {
   });
 }
 
-export function sellPaperShares(quantity: number) {
-  assertTradableSymbol(TRADABLE_SYMBOL);
-  if (!Number.isInteger(quantity) || quantity < 1) {
+export function formatOrderQty(quantity: number, whole: boolean) {
+  if (whole) return String(Math.round(quantity));
+  return quantity.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+export function paperCryptoLimitBuy(input: { symbol: string; quantity: number; limitPrice: number; clientOrderId: string }) {
+  const asset = assetBySymbol(input.symbol);
+  if (!asset || asset.market !== "crypto") throw new UntouchableSymbolError(input.symbol);
+  if (!(input.quantity > 0) || !(input.limitPrice > 0)) throw new Error("Crypto orders need a price and a quantity.");
+  return {
+    symbol: asset.symbol,
+    qty: formatOrderQty(input.quantity, false),
+    side: "buy",
+    type: "limit",
+    time_in_force: "gtc",
+    limit_price: input.limitPrice.toFixed(2),
+    client_order_id: input.clientOrderId,
+  };
+}
+
+export function paperCryptoStop(input: { symbol: string; quantity: number; stopPrice: number; clientOrderId: string }) {
+  const asset = assetBySymbol(input.symbol);
+  if (!asset || asset.market !== "crypto") throw new UntouchableSymbolError(input.symbol);
+  const limit = Math.round(input.stopPrice * 0.995 * 100) / 100;
+  if (!(limit > 0) || !(limit < input.stopPrice)) throw new Error("Refusing a crypto stop that is not below the trigger.");
+  return {
+    symbol: asset.symbol,
+    qty: formatOrderQty(input.quantity, false),
+    side: "sell",
+    type: "stop_limit",
+    time_in_force: "gtc",
+    stop_price: input.stopPrice.toFixed(2),
+    limit_price: limit.toFixed(2),
+    client_order_id: input.clientOrderId,
+  };
+}
+
+export function placePaperCryptoLimit(input: Parameters<typeof paperCryptoLimitBuy>[0]) {
+  return alpacaFetch<AlpacaOrder>("/v2/orders", { method: "POST", body: JSON.stringify(paperCryptoLimitBuy(input)) });
+}
+
+export function placePaperCryptoStop(input: Parameters<typeof paperCryptoStop>[0]) {
+  return alpacaFetch<AlpacaOrder>("/v2/orders", { method: "POST", body: JSON.stringify(paperCryptoStop(input)) });
+}
+
+export function sellPaperShares(symbol: string, quantity: number) {
+  const asset = assetBySymbol(symbol);
+  assertTradableSymbol(symbol);
+  if (!asset) throw new UntouchableSymbolError(symbol);
+  if (asset.wholeShares && (!Number.isInteger(quantity) || quantity < 1)) {
     throw new Error("Exit quantity must be a positive whole number of shares.");
   }
+  if (!asset.wholeShares && !(quantity > 0)) throw new Error("Exit quantity must be positive.");
   return alpacaFetch<AlpacaOrder>("/v2/orders", {
     method: "POST",
     body: JSON.stringify({
-      symbol: TRADABLE_SYMBOL,
-      qty: String(quantity),
+      symbol: asset.symbol,
+      qty: formatOrderQty(quantity, asset.wholeShares),
       side: "sell",
       type: "market",
-      time_in_force: "day",
+      time_in_force: asset.wholeShares ? "day" : "ioc",
     }),
   });
 }
@@ -189,54 +242,43 @@ export async function syncAlpacaPaper(accountId: string, now: Date) {
     alpacaFetch<AlpacaAccount>("/v2/account"),
     alpacaFetch<AlpacaPosition[]>("/v2/positions"),
     prisma.account.findUniqueOrThrow({ where: { id: accountId } }),
-    prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE", symbol: TRADABLE_SYMBOL } }),
+    prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } }),
   ]);
   if (remote.trading_blocked || remote.account_blocked || remote.status !== "ACTIVE") {
     throw new Error("Alpaca paper account is not active.");
   }
-  const equityCents = dollarsToCents(remote.equity);
-  const cashCents = dollarsToCents(remote.cash);
-  const engineQty = openTrades.reduce((sum, trade) => sum + trade.quantity, 0);
+  const brokerEquityCents = dollarsToCents(remote.equity);
+  const brokerCashCents = dollarsToCents(remote.cash);
+  const engineQty = new Map<string, number>();
+  for (const trade of openTrades) {
+    const symbol = normalizeSymbol(trade.symbol);
+    engineQty.set(symbol, (engineQty.get(symbol) ?? 0) + trade.quantity);
+  }
   const kept = new Set<string>();
 
   for (const position of positions) {
-    const symbol = position.symbol.toUpperCase();
+    const symbol = normalizeSymbol(position.symbol);
     const qty = Math.abs(Number(position.qty));
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const averagePrice = Number(position.avg_entry_price ?? 0);
     const marketPrice = Number(position.current_price ?? averagePrice);
-    if (symbol === TRADABLE_SYMBOL) {
-      const baseline = Math.max(0, qty - engineQty);
-      if (baseline <= 0) continue;
-      kept.add(symbol);
-      await prisma.holding.upsert({
-        where: { accountId_symbol: { accountId, symbol } },
-        create: {
-          accountId,
-          symbol,
-          quantity: baseline,
-          averagePrice,
-          marketPrice,
-          origin: "BASELINE",
-          tradable: false,
-        },
-        update: { quantity: baseline, averagePrice, marketPrice, origin: "BASELINE", tradable: false },
-      });
-      continue;
-    }
+    const asset = assetBySymbol(symbol);
+    const quantity = asset ? Math.max(0, qty - (engineQty.get(symbol) ?? 0)) : qty;
+    if (asset && quantity <= 0) continue;
     kept.add(symbol);
+    const origin = asset ? "BASELINE" : "UNTOUCHABLE";
     await prisma.holding.upsert({
       where: { accountId_symbol: { accountId, symbol } },
       create: {
         accountId,
         symbol,
-        quantity: qty,
+        quantity,
         averagePrice,
         marketPrice,
-        origin: "UNTOUCHABLE",
+        origin,
         tradable: false,
       },
-      update: { quantity: qty, averagePrice, marketPrice, origin: "UNTOUCHABLE", tradable: false },
+      update: { quantity, averagePrice, marketPrice, origin, tradable: false },
     });
   }
 
@@ -245,23 +287,14 @@ export async function syncAlpacaPaper(accountId: string, now: Date) {
   });
 
   const first = local.mode !== "ALPACA_PAPER";
-  const dateKey = etParts(now).dateKey;
   await prisma.account.update({
     where: { id: accountId },
     data: {
       mode: "ALPACA_PAPER",
       demo: false,
-      cashCents,
-      equityCents,
-      ...(first
-        ? {
-            dayStartEquityCents: equityCents,
-            weekStartEquityCents: equityCents,
-            peakEquityCents: equityCents,
-            dayStartDate: dateKey,
-            haltReason: null,
-          }
-        : {}),
+      brokerEquityCents,
+      brokerCashCents,
+      ...(first ? { haltReason: null } : {}),
     },
   });
   if (first) {
@@ -270,7 +303,8 @@ export async function syncAlpacaPaper(accountId: string, now: Date) {
         accountId,
         kind: "BROKER",
         level: "info",
-        message: "Alpaca paper connected. The book now follows that account. Uriel trades SPY only and sizes from cash.",
+        message: "Alpaca paper connected. The $1,000 working book stays in place. That account is the broker and is not reset.",
+        payload: { connectedAt: now.toISOString() },
       },
     });
   }

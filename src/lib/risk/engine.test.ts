@@ -5,7 +5,7 @@ import { etInstant } from "@/lib/market/time";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { aggregateEquity } from "@/lib/portfolio/equity";
 import { evaluateRisk } from "@/lib/risk/engine";
-import { sharesForRisk } from "@/lib/risk/sizing";
+import { quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, TradeProposal } from "@/lib/risk/types";
 import { evaluateOrb, type Bar } from "@/lib/strategy/orb";
@@ -53,6 +53,12 @@ describe("position sizing", () => {
     const sized = sharesForRisk(5_000_000, 500, 498);
     expect(sized.budgetCents).toBe(100_000);
     expect(sized.shares).toBe(500);
+  });
+
+  it("floors a crypto quantity to the exchange step", () => {
+    const sized = quantityForRisk(100_000, 100_000, 98_000, 0.0001);
+    expect(sized.budgetCents).toBe(2_000);
+    expect(sized.shares).toBeCloseTo(0.01, 8);
   });
 });
 
@@ -142,6 +148,55 @@ describe("risk engine", () => {
     expect(decision.reasons.join(" ")).toMatch(/Pattern day trader/);
   });
 
+  it("allows QQQ only for the stock worker", () => {
+    expect(evaluateRisk(proposal({ symbol: "QQQ" }), state()).approved).toBe(false);
+    const decision = evaluateRisk(proposal({ symbol: "QQQ" }), state({ allowedSymbols: ["SPY", "QQQ"] }));
+    expect(decision.approved).toBe(true);
+    expect(decision.shares).toBe(500);
+  });
+
+  it("approves a fractional crypto buy during the UTC window even after three stock day trades", () => {
+    const decision = evaluateRisk(
+      proposal({
+        symbol: "BTC/USD",
+        entryPrice: 100_000,
+        stopPrice: 98_000,
+        targetPrice: 105_000,
+        requestedShares: 0.01,
+        setup: "CRYPTO_LAST_HALF",
+        now: new Date("2026-10-02T23:30:00.000Z"),
+        market: "crypto",
+        quantityStep: 0.0001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        dayTradesInPdtWindow: 3,
+        allowedSymbols: ["BTC/USD", "ETH/USD"],
+      }),
+    );
+    expect(decision.approved).toBe(true);
+    expect(decision.shares).toBeCloseTo(0.01, 8);
+    const paused = evaluateRisk(
+      proposal({
+        symbol: "ETH/USD",
+        entryPrice: 4_000,
+        stopPrice: 3_920,
+        targetPrice: 4_200,
+        requestedShares: 0.25,
+        now: new Date("2026-10-02T23:30:00.000Z"),
+        market: "crypto",
+        quantityStep: 0.0001,
+      }),
+      state({ equityCents: 100_000, cashCents: 100_000, agentPaused: true, allowedSymbols: ["BTC/USD", "ETH/USD"] }),
+    );
+    expect(paused.approved).toBe(false);
+    expect(paused.reasons.join(" ")).toMatch(/Fonzo is paused/);
+  });
+
   it("refuses entries outside the window", () => {
     const decision = evaluateRisk(proposal({ now: etInstant("2026-10-03", 11, 0) }), state());
     expect(decision.approved).toBe(false);
@@ -168,6 +223,8 @@ describe("firewall", () => {
     expect(() =>
       assertAgentExit({ symbol: "SPY", quantity: 8, agentQuantity: 8, baselineQuantity: 10 }),
     ).not.toThrow();
+    expect(() => assertAgentExit({ symbol: "SPY", quantity: 1.5, agentQuantity: 2, baselineQuantity: 0 })).toThrow(/whole number/);
+    expect(() => assertAgentExit({ symbol: "BTC/USD", quantity: 0.01, agentQuantity: 0.01, baselineQuantity: 0 })).not.toThrow();
   });
 });
 

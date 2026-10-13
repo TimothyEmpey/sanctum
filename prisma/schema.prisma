@@ -31,8 +31,12 @@ model Account {
   weekStartDate        String?
   baselineSpyShares    Int      @default(0)
   agentPaused          Boolean  @default(false)
+  fonzoPaused          Boolean  @default(false)
   haltReason           String?
   shortingEnabled      Boolean  @default(false)
+  brokerEquityCents    Int?
+  brokerCashCents      Int?
+  bookResetAt          DateTime?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
@@ -67,7 +71,7 @@ model Trade {
   account          Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   symbol           String
   side             String
-  quantity         Int
+  quantity         Float
   entryPrice       Float
   stopPrice        Float
   initialStopPrice Float
@@ -96,7 +100,7 @@ model Order {
   side         String
   type         String
   purpose      String
-  quantity     Int
+  quantity     Float
   limitPrice    Float?
   stopPrice     Float?
   fillPrice     Float?
@@ -148,6 +152,7 @@ model StrategySession {
   accountId         String
   account           Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
   sessionDate       String
+  symbol            String    @default("SPY")
   orHigh            Float?
   orLow             Float?
   vwap              Float?
@@ -159,10 +164,10 @@ model StrategySession {
   dayBaselined      Boolean   @default(false)
   flattened         Boolean   @default(false)
   lastTradeWasLoss  Boolean   @default(false)
-  lastTradeShares   Int?
+  lastTradeShares   Float?
   updatedAt         DateTime  @updatedAt
 
-  @@unique([accountId, sessionDate])
+  @@unique([accountId, sessionDate, symbol])
 }
 
 model MarketBar {

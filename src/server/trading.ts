@@ -1,30 +1,36 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { Account, Holding, StrategySession, Trade } from "@prisma/client";
+import type { Account, StrategySession, Trade } from "@prisma/client";
+import { ASSETS, assetBySymbol, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
 import { previousBusinessDays, retiredFlattenMinute, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
-import { etParts, roundPrice } from "@/lib/market/time";
+import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
+import { etInstant, etParts, formatQty, roundPrice } from "@/lib/market/time";
 import { accountEquityCents } from "@/lib/portfolio/equity";
-import { RISK_LIMITS, STRATEGY_ID, TRADABLE_SYMBOL } from "@/lib/risk/constants";
+import { RISK_LIMITS, STRATEGY_ID } from "@/lib/risk/constants";
 import { evaluateRisk, haltReasonForState } from "@/lib/risk/engine";
-import { dollarRiskCents, notionalCents, sharesForRisk } from "@/lib/risk/sizing";
+import { dollarRiskCents, notionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, Side } from "@/lib/risk/types";
+import { evaluateCryptoMomentum, type CryptoProposal } from "@/lib/strategy/crypto-momentum";
 import {
   BROKER_CEILING_PCT,
   evaluateIntradayMomentum,
   MOMENTUM_SETUP,
-  type Bar,
   type MomentumProposal,
 } from "@/lib/strategy/intraday-momentum";
+import { evaluateQqqMomentum } from "@/lib/strategy/qqq-momentum";
 import { prisma } from "@/server/db";
 import { deterministicJournal, maybeNarrate } from "@/server/journal";
 import {
   alpacaPaperConfigured,
   cancelPaperOrder,
   getPaperOrder,
+  getPaperOrderByClientId,
   placePaperBracket,
+  placePaperCryptoLimit,
+  placePaperCryptoStop,
   replacePaperStop,
   sellPaperShares,
   syncAlpacaPaper,
@@ -32,68 +38,112 @@ import {
 import { fetchYahooBars } from "@/server/market";
 
 const HEARTBEAT_PATH = path.join(process.cwd(), "data", "heartbeat.json");
-let lastQuoteFetch = 0;
+const FONZO_HEARTBEAT_PATH = path.join(process.cwd(), "data", "fonzo-heartbeat.json");
+let lastStockFetch = 0;
+let lastCryptoFetch = 0;
 let lastHoldingFetch = 0;
 let lastHeartbeatEvent = 0;
+let lastFonzoHeartbeatEvent = 0;
 
 export type Heartbeat = {
   at: string;
   phase: string;
   label: string;
   spy: number | null;
+  qqq?: number | null;
   paused: boolean;
   haltReason: string | null;
   mode: string;
 };
 
-export function readHeartbeat(): Heartbeat | null {
+export type FonzoHeartbeat = {
+  at: string;
+  phase: string;
+  label: string;
+  btc: number | null;
+  eth: number | null;
+  paused: boolean;
+  haltReason: string | null;
+  mode: string;
+};
+
+type EntryProposal = MomentumProposal | CryptoProposal;
+
+function readJson<T>(file: string): T | null {
   try {
-    return JSON.parse(fs.readFileSync(HEARTBEAT_PATH, "utf8")) as Heartbeat;
+    return JSON.parse(fs.readFileSync(file, "utf8")) as T;
   } catch {
     return null;
   }
 }
 
-function writeHeartbeat(beat: Heartbeat) {
-  fs.mkdirSync(path.dirname(HEARTBEAT_PATH), { recursive: true });
-  fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify(beat, null, 2));
+export function readHeartbeat(): Heartbeat | null {
+  return readJson<Heartbeat>(HEARTBEAT_PATH);
 }
 
-async function latestSpy(accountId: string) {
+export function readFonzoHeartbeat(): FonzoHeartbeat | null {
+  return readJson<FonzoHeartbeat>(FONZO_HEARTBEAT_PATH);
+}
+
+function writeJson(file: string, value: unknown) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function clientOrderId(asset: Asset, orderId: string) {
+  return `${asset.desk}-${orderId}`.slice(0, 48);
+}
+
+function missingBrokerOrder(error: unknown) {
+  const message = error instanceof Error ? error.message : "";
+  return /404|not found/i.test(message);
+}
+
+async function latestMark(accountId: string, symbol: string) {
   const minute = await prisma.marketBar.findFirst({
-    where: { accountId, symbol: TRADABLE_SYMBOL, timeframe: "1m" },
+    where: { accountId, symbol, timeframe: "1m" },
     orderBy: { ts: "desc" },
   });
-  if (minute) return minute;
-  return prisma.marketBar.findFirst({
-    where: { accountId, symbol: TRADABLE_SYMBOL, timeframe: "1d" },
+  if (minute) return minute.close;
+  const daily = await prisma.marketBar.findFirst({
+    where: { accountId, symbol, timeframe: "1d" },
     orderBy: { ts: "desc" },
   });
+  return daily?.close ?? null;
 }
 
-async function ingestSymbol(accountId: string, symbol: string, interval: "1m" | "1d", range: string, all = false) {
-  const bars = await fetchYahooBars(symbol, interval, range);
+async function ingestSymbol(
+  accountId: string,
+  brokerSymbol: string,
+  yahooSymbol: string,
+  interval: "1m" | "1d",
+  range: string,
+  all = false,
+) {
+  const bars = await fetchYahooBars(yahooSymbol, interval, range);
   if (interval === "1m") {
     await prisma.$executeRaw`
       DELETE FROM "MarketBar"
       WHERE "accountId" = ${accountId}
-        AND symbol = ${symbol}
+        AND symbol = ${brokerSymbol}
         AND timeframe = '1m'
         AND EXTRACT(SECOND FROM ts) <> 0
     `;
   }
   const latest = await prisma.marketBar.findFirst({
-    where: { accountId, symbol, timeframe: interval },
+    where: { accountId, symbol: brokerSymbol, timeframe: interval },
     orderBy: { ts: "desc" },
   });
   const fresh = all ? bars : bars.filter((bar) => !latest || bar.ts >= latest.ts.getTime());
   for (const bar of fresh) {
     const volume = Math.min(2_000_000_000, Math.max(0, Math.round(bar.volume)));
     await prisma.marketBar.upsert({
-      where: { accountId_symbol_ts_timeframe: { accountId, symbol, ts: new Date(bar.ts), timeframe: interval } },
+      where: {
+        accountId_symbol_ts_timeframe: { accountId, symbol: brokerSymbol, ts: new Date(bar.ts), timeframe: interval },
+      },
       create: {
         accountId,
-        symbol,
+        symbol: brokerSymbol,
         ts: new Date(bar.ts),
         open: bar.open,
         high: bar.high,
@@ -108,28 +158,32 @@ async function ingestSymbol(accountId: string, symbol: string, interval: "1m" | 
   return bars.at(-1)?.close ?? null;
 }
 
-export async function refreshMarket(accountId: string, clock: SessionClock, now: Date) {
-  const active = ["preopen", "opening_range", "entry", "manage", "flatten"].includes(clock.phase);
-  if (active || now.getTime() - lastQuoteFetch > 5 * 60_000) {
-    lastQuoteFetch = now.getTime();
-    await ingestSymbol(accountId, TRADABLE_SYMBOL, active ? "1m" : "1d", active ? "1d" : "5d");
+async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, now: Date, which: "stock" | "crypto") {
+  const last = which === "stock" ? lastStockFetch : lastCryptoFetch;
+  if (hot || now.getTime() - last > 5 * 60_000) {
+    if (which === "stock") lastStockFetch = now.getTime();
+    else lastCryptoFetch = now.getTime();
+    for (const asset of assets) {
+      await ingestSymbol(accountId, asset.symbol, asset.yahoo, hot ? "1m" : "1d", hot ? "1d" : "5d");
+    }
   }
-  if (!active) {
-    const dailyCount = await prisma.marketBar.count({
-      where: { accountId, symbol: TRADABLE_SYMBOL, timeframe: "1d" },
-    });
-    if (dailyCount < 80) await ingestSymbol(accountId, TRADABLE_SYMBOL, "1d", "6mo", true);
+  if (!hot) {
+    for (const asset of assets) {
+      const dailyCount = await prisma.marketBar.count({
+        where: { accountId, symbol: asset.symbol, timeframe: "1d" },
+      });
+      if (dailyCount < 80) await ingestSymbol(accountId, asset.symbol, asset.yahoo, "1d", "6mo", true);
+    }
   }
   if (now.getTime() - lastHoldingFetch > 60 * 60_000) {
     lastHoldingFetch = now.getTime();
-    const holdings = await prisma.holding.findMany({ where: { accountId, symbol: { not: TRADABLE_SYMBOL } } });
+    const holdings = await prisma.holding.findMany({ where: { accountId } });
     for (const holding of holdings) {
+      if (assetBySymbol(holding.symbol)) continue;
       try {
         const bars = await fetchYahooBars(holding.symbol, "1d", "5d");
         const mark = bars.at(-1)?.close;
-        if (mark) {
-          await prisma.holding.update({ where: { id: holding.id }, data: { marketPrice: mark } });
-        }
+        if (mark) await prisma.holding.update({ where: { id: holding.id }, data: { marketPrice: mark } });
       } catch {
         // A missed quote must not become an order, and it must not throw the loop.
       }
@@ -137,61 +191,77 @@ export async function refreshMarket(accountId: string, clock: SessionClock, now:
   }
 }
 
-function markedEquity(input: {
-  cashCents: number;
-  holdings: Holding[];
-  trades: Trade[];
-  spy: number | null;
-}) {
+function sleeveEquity(cashCents: number, trades: Trade[], marks: Record<string, number>) {
   return accountEquityCents({
-    cashCents: input.cashCents,
-    holdings: input.holdings.map((holding) => ({
-      quantity: holding.quantity,
-      mark: holding.symbol === TRADABLE_SYMBOL && input.spy ? input.spy : holding.marketPrice,
-    })),
-    openTrades: input.trades
+    cashCents,
+    holdings: [],
+    openTrades: trades
       .filter((trade) => trade.origin === "ENGINE" && trade.status === "OPEN")
       .map((trade) => ({
         side: trade.side as Side,
         quantity: trade.quantity,
-        mark: input.spy ?? trade.entryPrice,
+        mark: marks[trade.symbol] ?? trade.entryPrice,
       })),
   });
 }
 
 async function loadBook(accountId: string) {
-  const [account, holdings, trades, sessionBars] = await Promise.all([
+  const [account, holdings, trades] = await Promise.all([
     prisma.account.findUniqueOrThrow({ where: { id: accountId } }),
     prisma.holding.findMany({ where: { accountId } }),
     prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } }),
-    latestSpy(accountId),
   ]);
-  const spy = sessionBars?.close ?? null;
-  const equityCents = markedEquity({ cashCents: account.cashCents, holdings, trades, spy });
-  return { account, holdings, trades, spy, equityCents };
+  const marks: Record<string, number> = {};
+  for (const asset of ASSETS) {
+    const mark = await latestMark(accountId, asset.symbol);
+    if (mark != null) marks[asset.symbol] = mark;
+  }
+  return {
+    account,
+    holdings,
+    trades,
+    marks,
+    equityCents: sleeveEquity(account.cashCents, trades, marks),
+  };
 }
 
 async function dayTradeCount(accountId: string, dateKey: string) {
   const window = new Set([dateKey, ...previousBusinessDays(dateKey, 4)]);
+  const start = etInstant(dateKey, 0, 0);
   const trades = await prisma.trade.findMany({
-    where: { accountId, origin: "ENGINE", closedAt: { not: null } },
+    where: { accountId, origin: "ENGINE", closedAt: { not: null }, symbol: { in: [...STOCK_SYMBOLS] } },
     select: { openedAt: true, closedAt: true },
   });
-  return trades.filter((trade) => {
+  const closed = trades.filter((trade) => {
     if (!trade.closedAt) return false;
     const opened = etParts(trade.openedAt).dateKey;
-    const closed = etParts(trade.closedAt).dateKey;
-    return opened === closed && window.has(opened);
+    const closedOn = etParts(trade.closedAt).dateKey;
+    return opened === closedOn && window.has(opened);
   }).length;
+  const openToday = await prisma.trade.count({
+    where: { accountId, origin: "ENGINE", status: "OPEN", symbol: { in: [...STOCK_SYMBOLS] }, openedAt: { gte: start } },
+  });
+  const workingToday = await prisma.order.count({
+    where: { accountId, status: "WORKING", purpose: "ENTRY", symbol: { in: [...STOCK_SYMBOLS] }, createdAt: { gte: start } },
+  });
+  return closed + openToday + workingToday;
 }
 
-async function riskState(account: Account, session: StrategySession, equityCents: number, clock: SessionClock): Promise<RiskState> {
+async function riskState(
+  account: Account,
+  session: StrategySession,
+  equityCents: number,
+  clock: SessionClock,
+  symbol: string,
+  allowedSymbols: string[],
+): Promise<RiskState> {
   const open = await prisma.trade.findMany({
     where: { accountId: account.id, status: "OPEN", origin: "ENGINE" },
   });
   const workingEntries = await prisma.order.findMany({
-    where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: TRADABLE_SYMBOL },
+    where: { accountId: account.id, status: "WORKING", purpose: "ENTRY" },
   });
+  const symbolWorking = workingEntries.filter((order) => order.symbol === symbol);
   const openRiskCents =
     open.reduce((sum, trade) => sum + dollarRiskCents(trade.quantity, trade.entryPrice, trade.stopPrice), 0) +
     workingEntries.reduce((sum, order) => {
@@ -212,16 +282,17 @@ async function riskState(account: Account, session: StrategySession, equityCents
     lastTradeShares: session.lastTradeShares,
     agentPaused: account.agentPaused,
     haltReason: account.haltReason,
-    spyPositionOpen: open.some((trade) => trade.symbol === TRADABLE_SYMBOL) || workingEntries.length > 0,
+    spyPositionOpen: open.some((trade) => trade.symbol === symbol) || symbolWorking.length > 0,
     shortingEnabled: account.shortingEnabled,
     dayTradesInPdtWindow: await dayTradeCount(account.id, clock.dateKey),
+    allowedSymbols,
   };
 }
 
-async function ensureSession(accountId: string, dateKey: string) {
+async function ensureSession(accountId: string, dateKey: string, symbol: string) {
   return prisma.strategySession.upsert({
-    where: { accountId_sessionDate: { accountId, sessionDate: dateKey } },
-    create: { accountId, sessionDate: dateKey },
+    where: { accountId_sessionDate_symbol: { accountId, sessionDate: dateKey, symbol } },
+    create: { accountId, sessionDate: dateKey, symbol },
     update: {},
   });
 }
@@ -242,6 +313,12 @@ async function snapshot(accountId: string, equityCents: number, cashCents: numbe
   await prisma.equitySnapshot.create({
     data: { accountId, equityCents, cashCents, spyPrice: spy, capturedAt: now },
   });
+}
+
+function sessionDateFor(trade: Trade) {
+  const asset = assetBySymbol(trade.symbol);
+  if (asset?.market === "crypto") return trade.openedAt.toISOString().slice(0, 10);
+  return etParts(trade.openedAt).dateKey;
 }
 
 async function closeTrade(
@@ -317,7 +394,13 @@ async function closeTrade(
       data: { status: purpose === "STOP" ? "FILLED" : "CANCELLED", fillPrice: purpose === "STOP" ? price : null, filledAt: now },
     });
     const session = await tx.strategySession.findUnique({
-      where: { accountId_sessionDate: { accountId: trade.accountId, sessionDate: etParts(trade.openedAt).dateKey } },
+      where: {
+        accountId_sessionDate_symbol: {
+          accountId: trade.accountId,
+          sessionDate: sessionDateFor(trade),
+          symbol: trade.symbol,
+        },
+      },
     });
     const loss = pnl < 0;
     if (session) {
@@ -342,42 +425,65 @@ async function closeTrade(
         accountId: trade.accountId,
         kind: "EXIT",
         level: "info",
-        message: `${purpose} ${trade.quantity} ${trade.symbol} at ${price.toFixed(2)}.`,
+        message: `${purpose} ${formatQty(trade.quantity)} ${trade.symbol} at ${price.toFixed(2)}.`,
         payload: { pnlCents: pnl, tradeId: trade.id },
       },
     });
   });
 }
 
-async function manageOpenTrades(accountId: string, now: Date) {
-  const clock = sessionClock(now);
-  const trades = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
-  const bars = await prisma.marketBar.findMany({
-    where: { accountId, symbol: TRADABLE_SYMBOL, timeframe: "1m", ts: { gte: new Date(`${clock.dateKey}T00:00:00Z`) } },
-    orderBy: { ts: "asc" },
+async function releaseWorkingEntry(order: { id: string; accountId: string; quantity: number; limitPrice: number | null }, reason: string) {
+  const reserved = order.limitPrice == null ? 0 : notionalCents(order.quantity, order.limitPrice);
+  await prisma.$transaction(async (tx) => {
+    const updated = await tx.order.updateMany({
+      where: { id: order.id, status: "WORKING", purpose: "ENTRY" },
+      data: { status: "CANCELLED", rejectReason: reason },
+    });
+    if (updated.count !== 1 || reserved === 0) return;
+    await tx.account.update({
+      where: { id: order.accountId },
+      data: { cashCents: { increment: reserved } },
+    });
   });
-  const today = bars.filter((bar) => isStrategyBar(bar.timeframe) && etParts(bar.ts).dateKey === clock.dateKey);
+}
 
+async function manageOpenTrades(accountId: string, now: Date, symbols: readonly string[]) {
+  const clock = sessionClock(now);
+  const utc = utcParts(now);
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
+  });
   for (const trade of trades) {
+    const asset = assetBySymbol(trade.symbol);
+    const market = asset?.market === "crypto" ? "crypto" : "nyse";
+    const dateKey = market === "crypto" ? utc.dateKey : clock.dateKey;
+    const bars = await prisma.marketBar.findMany({
+      where: { accountId, symbol: trade.symbol, timeframe: "1m" },
+      orderBy: { ts: "asc" },
+    });
+    const today = bars.filter((bar) => {
+      if (!isStrategyBar(bar.timeframe)) return false;
+      const key = market === "crypto" ? bar.ts.toISOString().slice(0, 10) : etParts(bar.ts).dateKey;
+      return key === dateKey;
+    });
     let stop = trade.initialStopPrice;
     let exit: { price: number; purpose: string } | null = null;
     for (const bar of today) {
       if (bar.ts < trade.openedAt) continue;
-      if (trade.side === "LONG") {
-        if (bar.low <= stop) {
-          exit = { price: stop, purpose: "STOP" };
-          break;
-        }
-        if (bar.high >= trade.targetPrice) {
-          exit = { price: trade.targetPrice, purpose: "TARGET" };
-          break;
-        }
-        if (trade.setup === MOMENTUM_SETUP) continue;
-        const oneR = trade.entryPrice + (trade.entryPrice - trade.initialStopPrice);
-        if (bar.high >= oneR) {
-          const change = stopChangeAllowed("LONG", trade.entryPrice, stop, trade.entryPrice);
-          if (change.ok) stop = trade.entryPrice;
-        }
+      if (trade.side !== "LONG") continue;
+      if (bar.low <= stop) {
+        exit = { price: stop, purpose: "STOP" };
+        break;
+      }
+      if (trade.setup !== "CRYPTO_LAST_HALF" && bar.high >= trade.targetPrice) {
+        exit = { price: trade.targetPrice, purpose: "TARGET" };
+        break;
+      }
+      if (isSessionExitSetup(trade.setup)) continue;
+      const oneR = trade.entryPrice + (trade.entryPrice - trade.initialStopPrice);
+      if (bar.high >= oneR) {
+        const change = stopChangeAllowed("LONG", trade.entryPrice, stop, trade.entryPrice);
+        if (change.ok) stop = trade.entryPrice;
       }
     }
     if (exit) {
@@ -388,7 +494,7 @@ async function manageOpenTrades(accountId: string, now: Date) {
       const change = stopChangeAllowed(trade.side as Side, trade.entryPrice, trade.stopPrice, stop);
       if (change.ok) {
         await prisma.trade.update({ where: { id: trade.id }, data: { stopPrice: stop } });
-        await logEvent(accountId, "STOP", `Stop tightened to ${stop.toFixed(2)} on ${trade.quantity} ${trade.symbol}.`);
+        await logEvent(accountId, "STOP", `Stop tightened to ${stop.toFixed(2)} on ${formatQty(trade.quantity)} ${trade.symbol}.`);
       }
     }
   }
@@ -398,19 +504,45 @@ export async function flattenAgentTrades(
   accountId: string,
   now = new Date(),
   purpose = "FLATTEN",
-  options?: { exceptSetup?: string },
+  options?: { exceptSetup?: string; symbols?: string[] },
 ) {
   const open = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
-  const targets = options?.exceptSetup ? open.filter((trade) => trade.setup !== options.exceptSetup) : open;
-  if (targets.length === 0) return 0;
+  const allowed = options?.symbols ? new Set(options.symbols) : null;
+  const targets = open.filter((trade) => {
+    if (allowed && !allowed.has(trade.symbol)) return false;
+    if (options?.exceptSetup && trade.setup === options.exceptSetup) return false;
+    return true;
+  });
+  const closed: string[] = [];
+  if (!options?.exceptSetup && alpacaPaperConfigured()) {
+    const entries = await prisma.order.findMany({
+      where: {
+        accountId,
+        status: "WORKING",
+        purpose: "ENTRY",
+        ...(allowed ? { symbol: { in: [...allowed] } } : {}),
+      },
+    });
+    for (const order of entries) {
+      if (order.brokerOrderId) {
+        try {
+          await cancelPaperOrder(order.brokerOrderId);
+        } catch {
+          // A missing or already-closed order should not block the flatten.
+        }
+      }
+      await releaseWorkingEntry(order, purpose);
+    }
+  }
+  if (targets.length === 0) return closed;
   const targetIds = new Set(targets.map((trade) => trade.id));
-  const spy = await latestSpy(accountId);
   if (alpacaPaperConfigured()) {
     const working = await prisma.order.findMany({
       where: { accountId, status: "WORKING", brokerOrderId: { not: null } },
     });
     for (const order of working) {
-      if (!order.brokerOrderId) continue;
+      if (!order.brokerOrderId || order.purpose === "ENTRY") continue;
+      if (allowed && !allowed.has(order.symbol)) continue;
       if (options?.exceptSetup && (!order.tradeId || !targetIds.has(order.tradeId))) continue;
       try {
         await cancelPaperOrder(order.brokerOrderId);
@@ -426,15 +558,24 @@ export async function flattenAgentTrades(
         agentQuantity: trade.quantity,
         baselineQuantity: 0,
       });
-      await sellPaperShares(trade.quantity);
-      await closeTrade(trade, spy?.close ?? trade.entryPrice, purpose, now, { adjustCash: false });
+      const asset = assetBySymbol(trade.symbol);
+      const sold = await sellPaperShares(trade.symbol, trade.quantity);
+      if (asset && !asset.wholeShares && sold.status !== "filled") {
+        await logEvent(accountId, "BROKER", `${trade.symbol} flatten was not filled. It will retry.`, "warn");
+        continue;
+      }
+      const mark = (await latestMark(accountId, trade.symbol)) ?? trade.entryPrice;
+      await closeTrade(trade, mark, purpose, now);
+      closed.push(trade.symbol);
     }
-    return targets.length;
+    return closed;
   }
   for (const trade of targets) {
-    await closeTrade(trade, spy?.close ?? trade.entryPrice, purpose, now);
+    const mark = (await latestMark(accountId, trade.symbol)) ?? trade.entryPrice;
+    await closeTrade(trade, mark, purpose, now);
+    closed.push(trade.symbol);
   }
-  return targets.length;
+  return closed;
 }
 
 async function executeProposal(
@@ -442,12 +583,17 @@ async function executeProposal(
   session: StrategySession,
   equityCents: number,
   clock: SessionClock,
-  proposal: MomentumProposal,
-  spy: number,
+  proposal: EntryProposal,
+  mark: number,
   now: Date,
+  allowedSymbols: string[],
 ) {
   if (session.lastSignalBarTs?.getTime() === proposal.signalBarTs) return;
-  const sized = sharesForRisk(equityCents, proposal.entryPrice, proposal.stopPrice);
+  const asset = assetBySymbol(proposal.symbol);
+  if (!asset) return;
+  const sized = asset.wholeShares
+    ? sharesForRisk(equityCents, proposal.entryPrice, proposal.stopPrice)
+    : quantityForRisk(equityCents, proposal.entryPrice, proposal.stopPrice, asset.quantityStep);
   const decision = evaluateRisk(
     {
       symbol: proposal.symbol,
@@ -458,8 +604,10 @@ async function executeProposal(
       requestedShares: sized.shares,
       setup: proposal.setup,
       now,
+      market: asset.market,
+      quantityStep: asset.quantityStep,
     },
-    await riskState({ ...account, equityCents } as Account, session, equityCents, clock),
+    await riskState(account, session, equityCents, clock, proposal.symbol, allowedSymbols),
   );
   await prisma.riskDecisionRecord.create({
     data: {
@@ -478,49 +626,95 @@ async function executeProposal(
     await logEvent(account.id, "RISK_BLOCK", decision.reasons.join(" "), "warn", { setup: proposal.setup });
     return;
   }
-
   assertTradableSymbol(proposal.symbol);
-  const fill = roundPrice(Math.min(proposal.entryPrice, spy + 0.01));
-  const cost = notionalCents(decision.shares, fill);
   if (proposal.side !== "LONG") {
     await logEvent(account.id, "RISK_BLOCK", "Live and paper execution are long-only.", "warn");
     return;
   }
 
+  const reserved = notionalCents(decision.shares, proposal.entryPrice);
   if (alpacaPaperConfigured()) {
+    let orderId: string | null = null;
+    let placedId: string | null = null;
     try {
-      const placed = await placePaperBracket({
-        symbol: proposal.symbol,
-        quantity: decision.shares,
-        limitPrice: proposal.entryPrice,
-        stopPrice: proposal.stopPrice,
-        targetPrice: proposal.targetPrice,
-        clientOrderId: `uriel-${proposal.signalBarTs}`,
+      const created = await prisma.$transaction(async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ cashCents: number }>>`
+          SELECT "cashCents" FROM "Account" WHERE id = ${account.id} FOR UPDATE
+        `;
+        const openEntry = await tx.order.findFirst({
+          where: { accountId: account.id, symbol: proposal.symbol, status: "WORKING", purpose: "ENTRY" },
+        });
+        if (openEntry) return "entry" as const;
+        if (rows[0].cashCents < reserved) return "cash" as const;
+        await tx.account.update({
+          where: { id: account.id },
+          data: { cashCents: { decrement: reserved } },
+        });
+        return tx.order.create({
+          data: {
+            accountId: account.id,
+            symbol: proposal.symbol,
+            side: "BUY",
+            type: "LIMIT",
+            purpose: "ENTRY",
+            quantity: decision.shares,
+            limitPrice: proposal.entryPrice,
+            stopPrice: proposal.stopPrice,
+            status: "WORKING",
+          },
+        });
       });
-      await prisma.order.create({
-        data: {
-          accountId: account.id,
-          symbol: proposal.symbol,
-          side: "BUY",
-          type: "LIMIT",
-          purpose: "ENTRY",
-          quantity: decision.shares,
-          limitPrice: proposal.entryPrice,
-          stopPrice: proposal.stopPrice,
-          status: "WORKING",
-          brokerOrderId: placed.id,
-        },
-      });
+      if (created === "entry" || created === "cash") {
+        await prisma.strategySession.update({
+          where: { id: session.id },
+          data: { lastSignalBarTs: new Date(proposal.signalBarTs) },
+        });
+        await logEvent(
+          account.id,
+          "RISK_BLOCK",
+          created === "cash"
+            ? `Not enough cash in the working book for ${proposal.symbol}.`
+            : `${proposal.symbol} entry is already working.`,
+          "warn",
+        );
+        return;
+      }
+      orderId = created.id;
+      const placed =
+        asset.market === "crypto"
+          ? await placePaperCryptoLimit({
+              symbol: proposal.symbol,
+              quantity: decision.shares,
+              limitPrice: proposal.entryPrice,
+              clientOrderId: clientOrderId(asset, created.id),
+            })
+          : await placePaperBracket({
+              symbol: proposal.symbol,
+              quantity: decision.shares,
+              limitPrice: proposal.entryPrice,
+              stopPrice: proposal.stopPrice,
+              targetPrice: proposal.targetPrice,
+              clientOrderId: clientOrderId(asset, created.id),
+            });
+      placedId = placed.id;
+      await prisma.order.update({ where: { id: created.id }, data: { brokerOrderId: placed.id } });
       await prisma.strategySession.update({
         where: { id: session.id },
         data: { tradesTaken: { increment: 1 }, lastSignalBarTs: new Date(proposal.signalBarTs) },
       });
+      const exitLine = asset.market === "crypto" ? "Exit is 24:00 UTC." : "Exit is the cash close.";
       await logEvent(
         account.id,
         "ENTRY",
-        `Submitted ${decision.shares} SPY to Alpaca paper. Limit ${proposal.entryPrice.toFixed(2)}, stop ${proposal.stopPrice.toFixed(2)}. Exit is the cash close.`,
+        `Submitted ${formatQty(decision.shares)} ${proposal.symbol} to Alpaca paper. Limit ${proposal.entryPrice.toFixed(2)}, stop ${proposal.stopPrice.toFixed(2)}. ${exitLine}`,
       );
     } catch (error) {
+      if (orderId && placedId) {
+        await prisma.order.update({ where: { id: orderId }, data: { brokerOrderId: placedId } }).catch(() => undefined);
+      } else if (orderId) {
+        const order = await prisma.order.findUnique({ where: { id: orderId } });
+        if (order && order.status === "WORKING" && order.brokerOrderId == null) await releaseWorkingEntry(order, "REJECTED");
+      }
       await prisma.strategySession.update({
         where: { id: session.id },
         data: { lastSignalBarTs: new Date(proposal.signalBarTs) },
@@ -530,6 +724,8 @@ async function executeProposal(
     return;
   }
 
+  const fill = roundPrice(Math.min(proposal.entryPrice, mark + 0.01));
+  const cost = notionalCents(decision.shares, fill);
   await prisma.$transaction(async (tx) => {
     const fresh = await tx.account.findUniqueOrThrow({ where: { id: account.id } });
     if (fresh.cashCents < cost) throw new Error("Cash changed before the fill.");
@@ -592,7 +788,7 @@ async function executeProposal(
         accountId: account.id,
         kind: "ENTRY",
         level: "info",
-        message: `Bought ${decision.shares} SPY at ${fill.toFixed(2)}. Stop is working at ${proposal.stopPrice.toFixed(2)}.`,
+        message: `Bought ${formatQty(decision.shares)} ${proposal.symbol} at ${fill.toFixed(2)}. Stop is working at ${proposal.stopPrice.toFixed(2)}.`,
       },
     });
   });
@@ -600,13 +796,47 @@ async function executeProposal(
 
 const CLOSED_ORDER = new Set(["canceled", "expired", "rejected", "replaced", "done_for_day"]);
 
-async function reconcileAlpaca(accountId: string, now: Date) {
+async function recoverUnsentEntries(accountId: string, symbols: readonly string[], now: Date) {
+  const cutoff = new Date(now.getTime() - 15_000);
+  const orphans = await prisma.order.findMany({
+    where: {
+      accountId,
+      status: "WORKING",
+      purpose: "ENTRY",
+      brokerOrderId: null,
+      symbol: { in: [...symbols] },
+      createdAt: { lt: cutoff },
+    },
+  });
+  for (const order of orphans) {
+    const asset = assetBySymbol(order.symbol);
+    if (!asset) continue;
+    try {
+      const remote = await getPaperOrderByClientId(clientOrderId(asset, order.id));
+      if (remote.id) {
+        await prisma.order.update({ where: { id: order.id }, data: { brokerOrderId: remote.id } });
+        continue;
+      }
+    } catch (error) {
+      if (!missingBrokerOrder(error)) {
+        await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Could not recover an entry.", "warn");
+        continue;
+      }
+    }
+    await releaseWorkingEntry(order, "UNSENT");
+    await logEvent(accountId, "BROKER", `Released cash for an unsent ${order.symbol} entry.`, "warn");
+  }
+}
+
+async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly string[]) {
+  await recoverUnsentEntries(accountId, symbols, now);
   const entries = await prisma.order.findMany({
-    where: { accountId, status: "WORKING", purpose: "ENTRY", brokerOrderId: { not: null } },
+    where: { accountId, status: "WORKING", purpose: "ENTRY", brokerOrderId: { not: null }, symbol: { in: [...symbols] } },
   });
   for (const order of entries) {
     if (!order.brokerOrderId || order.limitPrice == null || order.stopPrice == null) continue;
     const remote = await getPaperOrder(order.brokerOrderId);
+    const asset = assetBySymbol(order.symbol);
     if (remote.status === "filled") {
       const fill = roundPrice(Number(remote.filled_avg_price ?? order.limitPrice));
       const stopLeg = remote.legs?.find((leg) => leg.type === "stop" || leg.stop_price);
@@ -614,6 +844,8 @@ async function reconcileAlpaca(accountId: string, now: Date) {
       const stop = roundPrice(Number(stopLeg?.stop_price ?? order.stopPrice));
       const target = roundPrice(Number(targetLeg?.limit_price ?? fill * (1 + BROKER_CEILING_PCT)));
       const quantity = Number(remote.filled_qty ?? order.quantity);
+      const reserved = notionalCents(order.quantity, order.limitPrice);
+      const paid = notionalCents(quantity, fill);
       await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
           SELECT id FROM "Order" WHERE id = ${order.id} AND status = 'WORKING' FOR UPDATE
@@ -630,16 +862,22 @@ async function reconcileAlpaca(accountId: string, now: Date) {
             initialStopPrice: stop,
             targetPrice: target,
             status: "OPEN",
-            setup: MOMENTUM_SETUP,
-            strategy: STRATEGY_ID,
+            setup: asset?.setup ?? MOMENTUM_SETUP,
+            strategy: asset?.strategyId ?? STRATEGY_ID,
             origin: "ENGINE",
             openedAt: now,
           },
         });
         await tx.order.update({
           where: { id: order.id },
-          data: { status: "FILLED", fillPrice: fill, filledAt: now, tradeId: trade.id },
+          data: { status: "FILLED", fillPrice: fill, filledAt: now, tradeId: trade.id, quantity },
         });
+        if (reserved !== paid) {
+          await tx.account.update({
+            where: { id: accountId },
+            data: { cashCents: { increment: reserved - paid } },
+          });
+        }
         for (const leg of remote.legs ?? []) {
           if (!leg.id) continue;
           const existing = await tx.order.findFirst({ where: { brokerOrderId: leg.id } });
@@ -666,21 +904,24 @@ async function reconcileAlpaca(accountId: string, now: Date) {
             accountId,
             kind: "ENTRY",
             level: "info",
-            message: `Alpaca paper filled ${quantity} SPY at ${fill.toFixed(2)}.`,
+            message: `Alpaca paper filled ${formatQty(quantity)} ${order.symbol} at ${fill.toFixed(2)}.`,
           },
         });
       });
     } else if (CLOSED_ORDER.has(remote.status)) {
-      await prisma.order.update({
-        where: { id: order.id },
-        data: { status: "CANCELLED", rejectReason: remote.status },
-      });
+      await releaseWorkingEntry(order, remote.status);
       await logEvent(accountId, "BROKER", `Alpaca paper entry ${remote.status}.`, "warn");
     }
   }
 
   const legs = await prisma.order.findMany({
-    where: { accountId, status: "WORKING", purpose: { in: ["STOP", "TARGET"] }, brokerOrderId: { not: null } },
+    where: {
+      accountId,
+      status: "WORKING",
+      purpose: { in: ["STOP", "TARGET"] },
+      brokerOrderId: { not: null },
+      symbol: { in: [...symbols] },
+    },
   });
   for (const leg of legs) {
     if (!leg.brokerOrderId || !leg.tradeId) continue;
@@ -694,18 +935,19 @@ async function reconcileAlpaca(accountId: string, now: Date) {
       data: { status: "FILLED", fillPrice: fill, filledAt: now },
     });
     if (claimed.count !== 1) continue;
-    await closeTrade(trade, fill, leg.purpose, now, { adjustCash: false, recordExitOrder: false });
+    await closeTrade(trade, fill, leg.purpose, now, { recordExitOrder: false });
   }
 
-  const open = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
-  if (open.length === 0) return;
-  const clock = sessionClock(now);
-  const bars = await prisma.marketBar.findMany({
-    where: { accountId, symbol: TRADABLE_SYMBOL, timeframe: "1m", ts: { gte: new Date(`${clock.dateKey}T00:00:00Z`) } },
-    orderBy: { ts: "asc" },
+  const open = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
   });
+  const clock = sessionClock(now);
   for (const trade of open) {
-    if (trade.setup === MOMENTUM_SETUP) continue;
+    if (isSessionExitSetup(trade.setup)) continue;
+    const bars = await prisma.marketBar.findMany({
+      where: { accountId, symbol: trade.symbol, timeframe: "1m", ts: { gte: new Date(`${clock.dateKey}T00:00:00Z`) } },
+      orderBy: { ts: "asc" },
+    });
     let stop = trade.stopPrice;
     for (const bar of bars) {
       if (bar.ts < trade.openedAt || etParts(bar.ts).dateKey !== clock.dateKey) continue;
@@ -722,27 +964,172 @@ async function reconcileAlpaca(accountId: string, now: Date) {
     await replacePaperStop(stopOrder.brokerOrderId, stop);
     await prisma.trade.update({ where: { id: trade.id }, data: { stopPrice: stop } });
     await prisma.order.update({ where: { id: stopOrder.id }, data: { stopPrice: stop } });
-    await logEvent(accountId, "STOP", `Stop tightened to ${stop.toFixed(2)} on ${trade.quantity} ${trade.symbol}.`);
+    await logEvent(accountId, "STOP", `Stop tightened to ${stop.toFixed(2)} on ${formatQty(trade.quantity)} ${trade.symbol}.`);
+  }
+}
+
+async function ensureCryptoStops(accountId: string) {
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...CRYPTO_SYMBOLS] } },
+  });
+  for (const trade of trades) {
+    const existing = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "STOP", status: "WORKING" },
+    });
+    if (existing) continue;
+    try {
+      const placed = await placePaperCryptoStop({
+        symbol: trade.symbol,
+        quantity: trade.quantity,
+        stopPrice: trade.stopPrice,
+        clientOrderId: `fonzo-stop-${trade.id}`.slice(0, 48),
+      });
+      await prisma.order.create({
+        data: {
+          accountId,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          side: "SELL",
+          type: "STOP",
+          purpose: "STOP",
+          quantity: trade.quantity,
+          stopPrice: trade.stopPrice,
+          status: "WORKING",
+          brokerOrderId: placed.id,
+        },
+      });
+      await logEvent(accountId, "STOP", `Stop working at ${trade.stopPrice.toFixed(2)} on ${formatQty(trade.quantity)} ${trade.symbol}.`);
+    } catch (error) {
+      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Crypto stop was not accepted.", "warn");
+    }
   }
 }
 
 export async function alignAlpaca(accountId: string, now = new Date()) {
-  await reconcileAlpaca(accountId, now);
+  await reconcileAlpaca(accountId, now, [...STOCK_SYMBOLS, ...CRYPTO_SYMBOLS]);
   await syncAlpacaPaper(accountId, now);
+}
+
+async function todayBars(accountId: string, symbol: string, dateKey: string, market: "nyse" | "crypto") {
+  const stored = await prisma.marketBar.findMany({
+    where: { accountId, symbol, timeframe: "1m" },
+    orderBy: { ts: "asc" },
+  });
+  return stored
+    .filter((bar) => {
+      if (!isStrategyBar(bar.timeframe)) return false;
+      const key = market === "crypto" ? bar.ts.toISOString().slice(0, 10) : etParts(bar.ts).dateKey;
+      return key === dateKey;
+    })
+    .map((bar) => ({
+      ts: bar.ts.getTime(),
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
+}
+
+async function considerStock(
+  account: Account,
+  asset: Asset,
+  equityCents: number,
+  clock: SessionClock,
+  now: Date,
+  mark: number,
+) {
+  const session = await ensureSession(account.id, clock.dateKey, asset.symbol);
+  const bars = await todayBars(account.id, asset.symbol, clock.dateKey, "nyse");
+  const pendingEntry = await prisma.order.count({
+    where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: asset.symbol },
+  });
+  const open = await prisma.trade.count({
+    where: { accountId: account.id, status: "OPEN", origin: "ENGINE", symbol: asset.symbol },
+  });
+  const daily = await prisma.marketBar.findMany({
+    where: { accountId: account.id, symbol: asset.symbol, timeframe: "1d" },
+    orderBy: { ts: "desc" },
+    take: 12,
+  });
+  const prior = daily.find((bar) => etParts(bar.ts).dateKey < clock.dateKey);
+  const context = {
+    now,
+    bars,
+    priorClose: prior?.close ?? null,
+    earlyClose: clock.earlyClose,
+    hasOpenPosition: open > 0 || pendingEntry > 0,
+    tradesTaken: session.tradesTaken,
+    maxTrades: RISK_LIMITS.maxTradesPerDay,
+  };
+  const view = asset.symbol === "QQQ" ? evaluateQqqMomentum(context) : evaluateIntradayMomentum(context);
+  await prisma.strategySession.update({
+    where: { id: session.id },
+    data: { orHigh: view.orHigh, orLow: view.orLow, vwap: view.vwap, standDown: view.standDown },
+  });
+  if (view.standDown && session.standDown !== view.standDown) {
+    await logEvent(account.id, "STAND_DOWN", `${asset.symbol}: ${view.standDown}`);
+  }
+  if (!view.proposal) return;
+  const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
+  const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+  await executeProposal(freshAccount, freshSession, equityCents, clock, view.proposal, mark, now, [...STOCK_SYMBOLS]);
+}
+
+async function considerCrypto(account: Account, asset: Asset, equityCents: number, now: Date, mark: number) {
+  const utc = utcParts(now);
+  const session = await ensureSession(account.id, utc.dateKey, asset.symbol);
+  const bars = await todayBars(account.id, asset.symbol, utc.dateKey, "crypto");
+  const pendingEntry = await prisma.order.count({
+    where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: asset.symbol },
+  });
+  const open = await prisma.trade.count({
+    where: { accountId: account.id, status: "OPEN", origin: "ENGINE", symbol: asset.symbol },
+  });
+  const view = evaluateCryptoMomentum({
+    now,
+    bars,
+    symbol: asset.symbol as "BTC/USD" | "ETH/USD",
+    strategy: asset.strategyId,
+    hasOpenPosition: open > 0 || pendingEntry > 0,
+    tradesTaken: session.tradesTaken,
+    maxTrades: RISK_LIMITS.maxTradesPerDay,
+  });
+  await prisma.strategySession.update({
+    where: { id: session.id },
+    data: { standDown: view.standDown },
+  });
+  if (view.standDown && session.standDown !== view.standDown) {
+    await logEvent(account.id, "STAND_DOWN", `${asset.symbol}: ${view.standDown}`);
+  }
+  if (!view.proposal) return;
+  const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
+  const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+  const paused = { ...freshAccount, agentPaused: freshAccount.fonzoPaused };
+  await executeProposal(paused, freshSession, equityCents, sessionClock(now), view.proposal, mark, now, [...CRYPTO_SYMBOLS]);
+}
+
+async function saveSleeve(accountId: string, equityCents: number, peakEquityCents: number, haltReason: string | null, extra?: object) {
+  await prisma.account.update({
+    where: { id: accountId },
+    data: { equityCents, peakEquityCents, haltReason, ...extra },
+  });
 }
 
 export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbeat } | { ok: false; reason: string }> {
   let account = await prisma.account.findFirst();
   if (!account) return { ok: false, reason: "No account" };
   const clock = sessionClock(now);
+  const hot = ["preopen", "opening_range", "entry", "manage", "flatten"].includes(clock.phase);
   try {
-    await refreshMarket(account.id, clock, now);
+    await refreshAssets(account.id, STOCK_ASSETS, hot, now, "stock");
   } catch (error) {
     await logEvent(account.id, "MARKET", error instanceof Error ? error.message : "Market data failed", "warn");
   }
   if (alpacaPaperConfigured()) {
     try {
-      await alignAlpaca(account.id, now);
+      await reconcileAlpaca(account.id, now, STOCK_SYMBOLS);
+      await syncAlpacaPaper(account.id, now);
       account = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
     } catch (error) {
       await logEvent(account.id, "BROKER", error instanceof Error ? error.message : "Alpaca paper sync failed.", "warn");
@@ -750,7 +1137,7 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
   }
 
   let book = await loadBook(account.id);
-  let equityCents = account.mode === "ALPACA_PAPER" ? account.equityCents : book.equityCents;
+  let equityCents = book.equityCents;
   const peakEquityCents = Math.max(account.peakEquityCents, equityCents);
   let dayStartEquityCents = account.dayStartEquityCents;
   let dayStartDate = account.dayStartDate;
@@ -769,123 +1156,190 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
     haltReason = null;
   }
 
-  haltReason = haltReasonForState({
-    equityCents,
-    peakEquityCents,
+  haltReason = haltReasonForState({ equityCents, peakEquityCents, dayStartEquityCents, weekStartEquityCents });
+  await saveSleeve(account.id, equityCents, peakEquityCents, haltReason, {
     dayStartEquityCents,
+    dayStartDate,
     weekStartEquityCents,
-  });
-
-  await prisma.account.update({
-    where: { id: account.id },
-    data: { equityCents, peakEquityCents, dayStartEquityCents, dayStartDate, weekStartEquityCents, weekStartDate, haltReason },
+    weekStartDate,
   });
 
   if (clock.tradingDay) {
-    if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now);
-    const flattenSession = await ensureSession(account.id, clock.dateKey);
+    if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now, STOCK_SYMBOLS);
     if (haltReason || clock.flattenDue) {
-      if (!flattenSession.flattened || haltReason) {
-        const closed = await flattenAgentTrades(account.id, now, haltReason ? "HALT" : "FLATTEN");
-        if (closed > 0) {
-          await logEvent(account.id, "FLATTEN", haltReason ?? "Cash close. SPY position sold.");
+      const accountId = account.id;
+      const sessions = await Promise.all(STOCK_SYMBOLS.map((symbol) => ensureSession(accountId, clock.dateKey, symbol)));
+      if (sessions.some((session) => !session.flattened) || haltReason) {
+        const closed = await flattenAgentTrades(account.id, now, haltReason ? "HALT" : "FLATTEN", { symbols: [...STOCK_SYMBOLS] });
+        if (closed.length > 0) {
+          const names = closed.join(" and ");
+          await logEvent(account.id, "FLATTEN", haltReason ?? `Cash close. ${names} position sold.`);
         }
-        await prisma.strategySession.update({ where: { id: flattenSession.id }, data: { flattened: clock.flattenDue } });
+        const remaining = await prisma.trade.count({
+          where: { accountId: account.id, status: "OPEN", origin: "ENGINE", symbol: { in: [...STOCK_SYMBOLS] } },
+        });
+        if (remaining === 0) {
+          for (const session of sessions) {
+            await prisma.strategySession.update({ where: { id: session.id }, data: { flattened: clock.flattenDue } });
+          }
+        }
       }
     } else if (clock.minutes >= retiredFlattenMinute(clock.earlyClose)) {
-      const closed = await flattenAgentTrades(account.id, now, "FLATTEN", { exceptSetup: MOMENTUM_SETUP });
-      if (closed > 0) {
-        await logEvent(account.id, "FLATTEN", "Retired playbook cutoff. Open SPY position closed.");
+      const closed = await flattenAgentTrades(account.id, now, "FLATTEN", {
+        exceptSetup: MOMENTUM_SETUP,
+        symbols: [...STOCK_SYMBOLS],
+      });
+      if (closed.length > 0) {
+        await logEvent(account.id, "FLATTEN", `Retired playbook cutoff. Open ${closed.join(" and ")} position closed.`);
       }
     }
   }
 
   book = await loadBook(account.id);
   equityCents = book.equityCents;
-  const session = await ensureSession(account.id, clock.dateKey);
-  if (clock.entryWindowOpen && book.spy && !account.agentPaused && !haltReason) {
-    const stored = await prisma.marketBar.findMany({
-      where: { accountId: account.id, symbol: TRADABLE_SYMBOL, timeframe: "1m" },
-      orderBy: { ts: "asc" },
-    });
-    const bars: Bar[] = stored
-      .filter((bar) => isStrategyBar(bar.timeframe) && etParts(bar.ts).dateKey === clock.dateKey)
-      .map((bar) => ({
-        ts: bar.ts.getTime(),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume: bar.volume,
-      }));
-    const pendingEntry = await prisma.order.count({
-      where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: TRADABLE_SYMBOL },
-    });
-    const daily = await prisma.marketBar.findMany({
-      where: { accountId: account.id, symbol: TRADABLE_SYMBOL, timeframe: "1d" },
-      orderBy: { ts: "desc" },
-      take: 12,
-    });
-    const prior = daily.find((bar) => etParts(bar.ts).dateKey < clock.dateKey);
-    const view = evaluateIntradayMomentum({
-      now,
-      bars,
-      priorClose: prior?.close ?? null,
-      earlyClose: clock.earlyClose,
-      hasOpenPosition: book.trades.length > 0 || pendingEntry > 0,
-      tradesTaken: session.tradesTaken,
-      maxTrades: RISK_LIMITS.maxTradesPerDay,
-    });
-    await prisma.strategySession.update({
-      where: { id: session.id },
-      data: {
-        orHigh: view.orHigh,
-        orLow: view.orLow,
-        vwap: view.vwap,
-        standDown: view.standDown,
-      },
-    });
-    if (view.standDown && session.standDown !== view.standDown) {
-      await logEvent(account.id, "STAND_DOWN", view.standDown);
-    }
-    if (view.proposal) {
-      const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
-      const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
-      await executeProposal(freshAccount, freshSession, equityCents, clock, view.proposal, book.spy, now);
+  account = book.account;
+  if (clock.entryWindowOpen && !account.agentPaused && !haltReason) {
+    for (const asset of STOCK_ASSETS) {
+      const mark = book.marks[asset.symbol];
+      if (mark == null) continue;
+      const fresh = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+      const freshBook = await loadBook(account.id);
+      await considerStock(fresh, asset, freshBook.equityCents, clock, now, mark);
     }
   }
 
   const finalBook = await loadBook(account.id);
-  if (finalBook.spy) {
+  for (const asset of STOCK_ASSETS) {
+    const mark = finalBook.marks[asset.symbol];
+    if (mark == null) continue;
     await prisma.holding.updateMany({
-      where: { accountId: account.id, symbol: TRADABLE_SYMBOL },
-      data: { marketPrice: finalBook.spy },
+      where: { accountId: account.id, symbol: asset.symbol },
+      data: { marketPrice: mark },
     });
   }
-  const finalEquity = account.mode === "ALPACA_PAPER" ? account.equityCents : finalBook.equityCents;
-  const finalCash = account.mode === "ALPACA_PAPER" ? account.cashCents : finalBook.account.cashCents;
+  const finalEquity = finalBook.equityCents;
   await prisma.account.update({
     where: { id: account.id },
-    data: {
-      equityCents: finalEquity,
-      peakEquityCents: Math.max(peakEquityCents, finalEquity),
-    },
+    data: { equityCents: finalEquity, peakEquityCents: Math.max(peakEquityCents, finalEquity) },
   });
-  await snapshot(account.id, finalEquity, finalCash, finalBook.spy, now);
+  await snapshot(account.id, finalEquity, finalBook.account.cashCents, finalBook.marks.SPY ?? null, now);
 
   const beat: Heartbeat = {
     at: now.toISOString(),
     phase: clock.phase,
     label: clock.label,
-    spy: finalBook.spy,
+    spy: finalBook.marks.SPY ?? null,
+    qqq: finalBook.marks.QQQ ?? null,
     paused: account.agentPaused,
     haltReason,
     mode: account.mode,
   };
-  writeHeartbeat(beat);
+  writeJson(HEARTBEAT_PATH, beat);
   if (now.getTime() - lastHeartbeatEvent > 10 * 60_000) {
     lastHeartbeatEvent = now.getTime();
-    await logEvent(account.id, "HEARTBEAT", `${clock.label}. SPY ${finalBook.spy?.toFixed(2) ?? "—"}.`);
+    const spy = beat.spy?.toFixed(2) ?? "—";
+    const qqq = beat.qqq?.toFixed(2) ?? "—";
+    await logEvent(account.id, "HEARTBEAT", `${clock.label}. SPY ${spy}. QQQ ${qqq}.`);
+  }
+  return { ok: true, beat };
+}
+
+export async function tickFonzo(now = new Date()): Promise<{ ok: true; beat: FonzoHeartbeat } | { ok: false; reason: string }> {
+  let account = await prisma.account.findFirst();
+  if (!account) return { ok: false, reason: "No account" };
+  const clock = cryptoSessionClock(now);
+  const minutes = utcParts(now).minutes;
+  const hot = minutes >= 23 * 60 + 25 || minutes < 40;
+  try {
+    await refreshAssets(account.id, CRYPTO_ASSETS, hot, now, "crypto");
+  } catch (error) {
+    await logEvent(account.id, "MARKET", error instanceof Error ? error.message : "Crypto quotes failed", "warn");
+  }
+  if (alpacaPaperConfigured()) {
+    try {
+      await reconcileAlpaca(account.id, now, CRYPTO_SYMBOLS);
+      await ensureCryptoStops(account.id);
+      await syncAlpacaPaper(account.id, now);
+      account = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+    } catch (error) {
+      await logEvent(account.id, "BROKER", error instanceof Error ? error.message : "Alpaca paper sync failed.", "warn");
+    }
+  }
+
+  const book = await loadBook(account.id);
+  let equityCents = book.equityCents;
+  const peakEquityCents = Math.max(account.peakEquityCents, equityCents);
+  const haltReason = haltReasonForState({
+    equityCents,
+    peakEquityCents,
+    dayStartEquityCents: account.dayStartEquityCents,
+    weekStartEquityCents: account.weekStartEquityCents,
+  });
+  await saveSleeve(account.id, equityCents, peakEquityCents, haltReason);
+
+  if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now, CRYPTO_SYMBOLS);
+  if (haltReason || clock.flattenDue) {
+    const dateKey = utcParts(now).dateKey;
+    const accountId = account.id;
+    const sessions = await Promise.all(CRYPTO_SYMBOLS.map((symbol) => ensureSession(accountId, dateKey, symbol)));
+    if (sessions.some((session) => !session.flattened) || haltReason) {
+      const closed = await flattenAgentTrades(account.id, now, haltReason ? "HALT" : "FLATTEN", { symbols: [...CRYPTO_SYMBOLS] });
+      if (closed.length > 0) {
+        await logEvent(account.id, "FLATTEN", haltReason ?? `Session close. ${closed.join(" and ")} position sold.`);
+      }
+      const remaining = await prisma.trade.count({
+        where: { accountId: account.id, status: "OPEN", origin: "ENGINE", symbol: { in: [...CRYPTO_SYMBOLS] } },
+      });
+      if (remaining === 0) {
+        for (const session of sessions) {
+          await prisma.strategySession.update({ where: { id: session.id }, data: { flattened: clock.flattenDue } });
+        }
+      }
+    }
+  }
+
+  account = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+  if (clock.entryWindowOpen && !account.fonzoPaused && !haltReason) {
+    for (const asset of CRYPTO_ASSETS) {
+      const freshBook = await loadBook(account.id);
+      const mark = freshBook.marks[asset.symbol];
+      if (mark == null) continue;
+      const fresh = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
+      await considerCrypto(fresh, asset, freshBook.equityCents, now, mark);
+    }
+  }
+
+  const finalBook = await loadBook(account.id);
+  for (const asset of CRYPTO_ASSETS) {
+    const mark = finalBook.marks[asset.symbol];
+    if (mark == null) continue;
+    await prisma.holding.updateMany({
+      where: { accountId: account.id, symbol: asset.symbol },
+      data: { marketPrice: mark },
+    });
+  }
+  equityCents = finalBook.equityCents;
+  await prisma.account.update({
+    where: { id: account.id },
+    data: { equityCents, peakEquityCents: Math.max(peakEquityCents, equityCents) },
+  });
+
+  const beat: FonzoHeartbeat = {
+    at: now.toISOString(),
+    phase: clock.phase,
+    label: clock.label,
+    btc: finalBook.marks["BTC/USD"] ?? null,
+    eth: finalBook.marks["ETH/USD"] ?? null,
+    paused: account.fonzoPaused,
+    haltReason,
+    mode: account.mode,
+  };
+  writeJson(FONZO_HEARTBEAT_PATH, beat);
+  if (now.getTime() - lastFonzoHeartbeatEvent > 10 * 60_000) {
+    lastFonzoHeartbeatEvent = now.getTime();
+    const btc = beat.btc?.toFixed(2) ?? "—";
+    const eth = beat.eth?.toFixed(2) ?? "—";
+    await logEvent(account.id, "HEARTBEAT", `${clock.label}. BTC ${btc}. ETH ${eth}.`);
   }
   return { ok: true, beat };
 }

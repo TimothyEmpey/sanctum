@@ -8,6 +8,17 @@ export function riskBudgetCents(equityCents: number, fraction: number = RISK_LIM
  * position_size = floor(equity × max_risk_per_trade / abs(entry - stop))
  * The budget is floored to the cent before the share floor, so size never rounds up.
  */
+export function quantityForRisk(equityCents: number, entryPrice: number, stopPrice: number, step = 1) {
+  const budgetCents = riskBudgetCents(equityCents);
+  const distance = Math.abs(entryPrice - stopPrice);
+  if (!(distance > 0) || budgetCents <= 0 || !(entryPrice > 0) || !(step > 0)) {
+    return { shares: 0, budgetCents, distance };
+  }
+  const raw = budgetCents / 100 / distance;
+  const shares = Math.round((Math.floor((raw + 1e-9) / step) * step) * 1e8) / 1e8;
+  return { shares, budgetCents, distance };
+}
+
 export function sharesForRisk(equityCents: number, entryPrice: number, stopPrice: number) {
   const budgetCents = riskBudgetCents(equityCents);
   const distance = Math.abs(entryPrice - stopPrice);

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Sanctum commands control Uriel and Fonzo together.
+set -euo pipefail
+source="${BASH_SOURCE[0]}"
+while [ -L "$source" ]; do
+  dir="$(cd "$(dirname "$source")" && pwd)"
+  source="$(readlink "$source")"
+  [[ "$source" != /* ]] && source="$dir/$source"
+done
+root="$(cd "$(dirname "$source")/.." && pwd)"
+export SANCTUM_DESK=sanctum
+exec "$root/bin/uriel" "$@"

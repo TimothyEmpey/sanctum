@@ -2,16 +2,20 @@ import { BookBanner, FillTape, PositionBook } from "@/components/desk-widgets";
 import { Card, CardTitle } from "@/components/ui/card";
 import { getDesk } from "@/server/desk";
 
-export default async function LogsPage() {
-  const desk = await getDesk();
+export default async function LogsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ book?: string; asset?: string }>;
+}) {
+  const desk = await getDesk(await searchParams);
   if (!desk) return <p>Seed the paper account before opening the desk.</p>;
   return (
     <div className="space-y-5">
       <div>
-        <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Ledger</p>
+        <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">{desk.assetLabel} ledger</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Logs</h1>
       </div>
-      <BookBanner mode={desk.mode} demo={desk.demo} />
+      <BookBanner mode={desk.mode} demo={desk.demo} brokerEquityCents={desk.brokerEquityCents} />
       <PositionBook desk={desk} includeUntouchable={false} />
       <FillTape desk={desk} />
       <Card>

@@ -5,21 +5,12 @@ import { Card, CardTitle } from "@/components/ui/card";
 import { formatUsd } from "@/lib/market/time";
 import { getDesk } from "@/server/desk";
 
-const rules = [
-  "Every trade has a stop before the entry is recorded.",
-  "A stop can move closer. It cannot move farther away.",
-  "Size is floored from 2% of equity divided by the stop distance.",
-  "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
-  "Two losses in a row locks out new entries for the session.",
-  "One entry a day, two open positions, 4% combined open risk.",
-  "Daily loss, weekly loss, and peak drawdown each halt at 5%.",
-  "SPY only. Other symbols and reserved SPY shares are untouchable.",
-  "The position is sold at the cash close. The stop is a disaster exit, not a profit target.",
-  "Accounts under $25,000 stop at 3 day trades in 5 business days.",
-];
-
-export default async function RiskPage() {
-  const desk = await getDesk();
+export default async function RiskPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ book?: string; asset?: string }>;
+}) {
+  const desk = await getDesk(await searchParams);
   if (!desk) return <p>Seed the paper account before opening the desk.</p>;
   const meters = [
     ["Per trade", `${desk.limits.maxRiskPerTrade * 100}%`],
@@ -37,7 +28,7 @@ export default async function RiskPage() {
         <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Guardrails</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Risk</h1>
         <p className="mt-1 max-w-2xl text-sm text-[var(--muted)]">
-          Uriel proposes. The risk engine sizes and can refuse. Nothing reaches the broker without a stop and a symbol check.
+          {desk.workerName} proposes. The risk engine sizes and can refuse. Nothing reaches the broker without a stop and a symbol check. Loss limits use the shared $1,000 book.
         </p>
       </div>
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -61,13 +52,17 @@ export default async function RiskPage() {
         <Card>
           <CardTitle>Controls</CardTitle>
           <p className="mt-2 text-sm">{desk.haltReason ?? "No halt is active."}</p>
-          <p className="mt-2 text-sm text-[var(--muted)]">{desk.paused ? "Uriel is paused." : "Uriel can take a new entry inside the window."}</p>
+          <p className="mt-2 text-sm text-[var(--muted)]">
+            {desk.paused ? `${desk.workerName} is paused.` : `${desk.workerName} can take a new entry inside the window.`}
+          </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <form action={togglePause}>
-              <Button type="submit">{desk.paused ? "Resume Uriel" : "Pause Uriel"}</Button>
+              <input type="hidden" name="desk" value={desk.deskName} />
+              <Button type="submit">{desk.paused ? `Resume ${desk.workerName}` : `Pause ${desk.workerName}`}</Button>
             </form>
             <form action={flattenNow}>
-              <Button type="submit" variant="outline">Flatten SPY day trades</Button>
+              <input type="hidden" name="symbol" value={desk.symbol} />
+              <Button type="submit" variant="outline">Flatten {desk.assetLabel}</Button>
             </form>
           </div>
           <p className="mt-4 text-xs leading-5 text-[var(--muted)]">{desk.alpaca.configured ? desk.alpaca.detail : desk.robinhood.detail}</p>
@@ -75,11 +70,9 @@ export default async function RiskPage() {
       </div>
       <Card>
         <CardTitle>Playbook</CardTitle>
-        <p className="mt-3 text-sm leading-6">
-          The playbook is the SPY last-half-hour rule from Gao, Han, Li, and Zhou, Journal of Financial Economics (2018). The signal is the return from the previous close to 10:00 ET. If that return is positive, Uriel buys at 3:30 PM ET and sells at the cash close. If it is not, Uriel does not trade. The paper shorts a down signal. This desk does not, so it takes only the long side of that result. On 1993–2013 data the long-and-short version in the paper made about 6.67% a year before costs, Sharpe about 1.08. After the bid-ask spread that was about 4.46% a year. A long-only account is a smaller slice, and the sample ends in 2013. The stop is 2% under the entry so the risk engine can still buy with the cash on hand. The paper does not use a profit target. The model writes a journal line after the fact. It does not choose the order.
-        </p>
+        <p className="mt-3 text-sm leading-6">{desk.playbook}</p>
         <ul className="mt-4 space-y-2 text-sm">
-          {rules.map((rule) => (
+          {desk.rules.map((rule) => (
             <li key={rule} className="rounded-2xl border border-[var(--border)] px-3 py-2">{rule}</li>
           ))}
         </ul>

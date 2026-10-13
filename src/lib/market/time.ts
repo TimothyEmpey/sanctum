@@ -101,7 +101,7 @@ export function formatPx(value: number) {
 }
 
 export function formatQty(value: number) {
-  return value.toLocaleString("en-US", { maximumFractionDigits: 4 });
+  return value.toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 
 export function percentOf(part: number, whole: number) {
