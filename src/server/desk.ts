@@ -230,7 +230,7 @@ export async function getDesk(query?: DeskQuery) {
     snapshots: snapshots
       .map((row) => ({ t: row.capturedAt.getTime(), equityCents: row.equityCents }))
       .reverse(),
-    spyBars: {
+    bars: {
       daily: dailyBars.map(candle).reverse(),
       minute: minuteBars.map(candle).reverse(),
     },

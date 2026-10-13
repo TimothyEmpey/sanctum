@@ -43,7 +43,7 @@ export default async function DashboardPage({
             <CardTitle>{desk.assetLabel}</CardTitle>
             <p className="tabular text-lg font-semibold">{desk.mark == null ? "—" : formatPx(desk.mark)}</p>
           </div>
-          <PriceChart daily={desk.spyBars.daily} minute={desk.spyBars.minute} />
+          <PriceChart key={desk.symbol} symbol={desk.assetLabel} daily={desk.bars.daily} minute={desk.bars.minute} />
         </Card>
         <Card className="space-y-3 lg:col-span-2">
           <CardTitle>Status</CardTitle>

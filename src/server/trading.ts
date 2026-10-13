@@ -135,27 +135,42 @@ async function ingestSymbol(
     orderBy: { ts: "desc" },
   });
   const fresh = all ? bars : bars.filter((bar) => !latest || bar.ts >= latest.ts.getTime());
-  for (const bar of fresh) {
-    const volume = Math.min(2_000_000_000, Math.max(0, Math.round(bar.volume)));
-    await prisma.marketBar.upsert({
+  const rows = fresh.map((bar) => ({
+    accountId,
+    symbol: brokerSymbol,
+    ts: new Date(bar.ts),
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: Math.min(2_000_000_000, Math.max(0, Math.round(bar.volume))),
+    timeframe: interval,
+  }));
+  for (let index = 0; index < rows.length; index += 500) {
+    await prisma.marketBar.createMany({ data: rows.slice(index, index + 500), skipDuplicates: true });
+  }
+  for (const row of rows.slice(-2)) {
+    await prisma.marketBar.update({
       where: {
-        accountId_symbol_ts_timeframe: { accountId, symbol: brokerSymbol, ts: new Date(bar.ts), timeframe: interval },
+        accountId_symbol_ts_timeframe: { accountId, symbol: row.symbol, ts: row.ts, timeframe: interval },
       },
-      create: {
-        accountId,
-        symbol: brokerSymbol,
-        ts: new Date(bar.ts),
-        open: bar.open,
-        high: bar.high,
-        low: bar.low,
-        close: bar.close,
-        volume,
-        timeframe: interval,
-      },
-      update: { high: bar.high, low: bar.low, close: bar.close, volume, timeframe: interval },
+      data: { high: row.high, low: row.low, close: row.close, volume: row.volume },
     });
   }
   return bars.at(-1)?.close ?? null;
+}
+
+/** The chart needs minute bars after the session, and crypto keeps printing overnight. */
+async function refreshIntraday(accountId: string, asset: Asset, now: Date) {
+  const latest = await prisma.marketBar.findFirst({
+    where: { accountId, symbol: asset.symbol, timeframe: "1m" },
+    orderBy: { ts: "desc" },
+  });
+  const age = latest ? now.getTime() - latest.ts.getTime() : Number.POSITIVE_INFINITY;
+  if (asset.market === "nyse" && latest && age < 7 * 24 * 60 * 60 * 1000) return;
+  if (asset.market === "crypto" && latest && age < 5 * 60_000) return;
+  const range = latest && age < 2 * 24 * 60 * 60 * 1000 ? "1d" : "5d";
+  await ingestSymbol(accountId, asset.symbol, asset.yahoo, "1m", range);
 }
 
 async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, now: Date, which: "stock" | "crypto") {
@@ -165,6 +180,7 @@ async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, n
     else lastCryptoFetch = now.getTime();
     for (const asset of assets) {
       await ingestSymbol(accountId, asset.symbol, asset.yahoo, hot ? "1m" : "1d", hot ? "1d" : "5d");
+      if (!hot) await refreshIntraday(accountId, asset, now);
     }
   }
   if (!hot) {

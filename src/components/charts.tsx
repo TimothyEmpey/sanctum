@@ -77,10 +77,11 @@ function candleLabel(t: number, frame: CandleFrame, sameDay: boolean) {
     : { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
 }
 
-export function PriceChart({ daily, minute }: { daily: Ohlc[]; minute: Ohlc[] }) {
-  const [frame, setFrame] = useState<CandleFrame>(minute.length >= 10 ? "5m" : "1D");
+export function PriceChart({ symbol, daily, minute }: { symbol: string; daily: Ohlc[]; minute: Ohlc[] }) {
+  const intraday = useMemo(() => fiveMinuteCandles(minute), [minute]);
+  const [frame, setFrame] = useState<CandleFrame>(intraday.length >= 2 ? "5m" : "1D");
   const [hover, setHover] = useState<number | null>(null);
-  const points = frame === "5m" ? fiveMinuteCandles(minute) : daily;
+  const points = frame === "5m" ? intraday : daily;
   const active = hover == null ? points.at(-1) : points[hover];
   const prior = hover == null ? points.at(-2) : points[Math.max(0, hover - 1)];
   const change = active && prior && active !== prior ? active.close - prior.close : 0;
@@ -108,21 +109,25 @@ export function PriceChart({ daily, minute }: { daily: Ohlc[]; minute: Ohlc[] })
       </div>
       {points.length < 2 ? (
         <p className="text-sm text-[var(--muted)]">
-          {frame === "5m" ? "Five-minute candles print once the session is open." : "Daily candles show up once SPY history is stored."}
+          {frame === "5m"
+            ? `Five-minute candles for ${symbol} print once that history is stored.`
+            : `Daily candles for ${symbol} show up once that history is stored.`}
         </p>
       ) : (
-        <CandleSvg points={points} frame={frame} hover={hover} onHover={setHover} />
+        <CandleSvg symbol={symbol} points={points} frame={frame} hover={hover} onHover={setHover} />
       )}
     </div>
   );
 }
 
 function CandleSvg({
+  symbol,
   points,
   frame,
   hover,
   onHover,
 }: {
+  symbol: string;
   points: Ohlc[];
   frame: CandleFrame;
   hover: number | null;
@@ -150,7 +155,7 @@ function CandleSvg({
           width={layout.width}
           height={layout.height}
           role="img"
-          aria-label="SPY candlestick chart"
+          aria-label={`${symbol} candlestick chart`}
           className="touch-none"
           onPointerMove={(event) => onHover(layout.indexAt(event.clientX, event.currentTarget))}
           onPointerLeave={() => onHover(null)}
