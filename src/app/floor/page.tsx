@@ -4,7 +4,6 @@ import { PriceChart } from "@/components/charts";
 import { FloorPets } from "@/components/floor-pets";
 import { LiveRefresh } from "@/components/live-refresh";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardTitle } from "@/components/ui/card";
 import { formatPx, formatQty, formatUsd } from "@/lib/market/time";
@@ -13,6 +12,25 @@ import { getFloor } from "@/server/floor";
 import { cn } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
+
+function positionLine(panel: {
+  label: string;
+  openTrades: Array<{ side: string; quantity: number; entryPrice: number; stopPrice: number; targetPrice: number; setup: string; unrealizedCents: number }>;
+  baseline: Array<{ quantity: number; averagePrice: number; marketValueCents: number }>;
+}) {
+  const trade = panel.openTrades[0];
+  if (trade) {
+    const exit =
+      trade.setup === MOMENTUM_SETUP ? "exit at the cash close" : trade.setup === "CRYPTO_LAST_HALF" ? "exit at 24:00 UTC" : `target ${formatPx(trade.targetPrice)}`;
+    const extra = panel.openTrades.length > 1 ? ` · +${panel.openTrades.length - 1} more` : "";
+    return `${trade.side} ${formatQty(trade.quantity)} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · ${exit} · ${formatUsd(trade.unrealizedCents, true)}${extra}`;
+  }
+  const holding = panel.baseline[0];
+  if (holding) {
+    return `${formatQty(holding.quantity)} reserved · avg ${formatPx(holding.averagePrice)} · ${formatUsd(holding.marketValueCents)}`;
+  }
+  return `No open ${panel.label} position.`;
+}
 
 const links = [
   { href: "/", label: "Dashboard" },
@@ -33,11 +51,10 @@ export default async function FloorPage() {
     <>
       <LiveRefresh />
       <FloorPets fonzoTone={fonzoTone} urielTone={urielTone} />
-      <div className="mx-auto min-h-screen max-w-6xl px-4 pb-24 pt-5 md:pb-10 md:pt-6">
-        <header className="mb-5 flex flex-wrap items-center justify-between gap-3 pl-28 pr-28 sm:pl-36 sm:pr-36">
+      <div className="flex h-dvh flex-col overflow-hidden px-3 pb-16 pt-2 md:px-4 md:pb-3">
+        <header className="mb-2 flex h-10 shrink-0 items-center justify-between gap-2 pl-24 pr-24 sm:pl-32 sm:pr-32">
           <div>
-            <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Sanctum</p>
-            <h1 className="text-lg font-semibold tracking-tight">Floor</h1>
+            <h1 className="text-sm font-semibold tracking-tight">Floor</h1>
           </div>
           <nav className="hidden items-center gap-1 md:flex">
             {links.map((link) => (
@@ -62,60 +79,20 @@ export default async function FloorPage() {
             </form>
           </div>
         </header>
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid min-h-0 flex-1 grid-cols-2 grid-rows-2 gap-2">
           {floor.panels.map((panel) => (
-            <Card key={panel.symbol} className="min-w-0">
-              <div className="mb-3 flex items-baseline justify-between gap-3">
-                <div>
-                  <CardTitle>{panel.label}</CardTitle>
-                  <p className="mt-1 text-xs text-[var(--muted)]">{panel.workerName}</p>
-                </div>
-                <p className="tabular text-lg font-semibold">{panel.mark == null ? "—" : formatPx(panel.mark)}</p>
+            <Card key={panel.symbol} className="flex min-h-0 min-w-0 flex-col overflow-hidden p-2 md:p-2.5">
+              <div className="mb-1 flex shrink-0 items-baseline justify-between gap-2">
+                <CardTitle>
+                  {panel.label}
+                  <span className="ml-2 font-normal">{panel.workerName}</span>
+                </CardTitle>
+                <p className="tabular text-sm font-semibold">{panel.mark == null ? "—" : formatPx(panel.mark)}</p>
               </div>
-              <PriceChart key={panel.symbol} symbol={panel.label} daily={panel.bars.daily} minute={panel.bars.minute} />
-              <div className="mt-4 border-t border-[var(--border)] pt-4">
-                <h3 className="text-sm font-medium text-[var(--muted)]">Open positions</h3>
-                <div className="mt-3 space-y-2">
-                  {panel.openTrades.length === 0 && panel.baseline.length === 0 ? (
-                    <p className="text-sm text-[var(--muted)]">{`No open ${panel.label} position.`}</p>
-                  ) : null}
-                  {panel.openTrades.map((trade) => (
-                    <div key={trade.id} className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--border)] px-3 py-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{trade.symbol}</span>
-                          <Badge>{panel.workerName}</Badge>
-                        </div>
-                        <p className="mt-1 text-xs text-[var(--muted)]">
-                          {trade.side} {formatQty(trade.quantity)} · entry {formatPx(trade.entryPrice)} · stop {formatPx(trade.stopPrice)} ·{" "}
-                          {trade.setup === MOMENTUM_SETUP
-                            ? "exit at the cash close"
-                            : trade.setup === "CRYPTO_LAST_HALF"
-                              ? "exit at 24:00 UTC"
-                              : `target ${formatPx(trade.targetPrice)}`}
-                        </p>
-                      </div>
-                      <p className={`tabular text-sm font-medium ${trade.unrealizedCents > 0 ? "text-[var(--positive)]" : trade.unrealizedCents < 0 ? "text-[var(--negative)]" : ""}`}>
-                        {formatUsd(trade.unrealizedCents, true)}
-                      </p>
-                    </div>
-                  ))}
-                  {panel.baseline.map((holding) => (
-                    <div key={holding.symbol} className="flex items-center justify-between gap-3 rounded-2xl border border-[var(--border)] px-3 py-3">
-                      <div>
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{holding.symbol}</span>
-                          <Badge>Reserved</Badge>
-                        </div>
-                        <p className="mt-1 text-xs text-[var(--muted)]">
-                          {formatQty(holding.quantity)} shares reserved · avg {formatPx(holding.averagePrice)} · last {formatPx(holding.marketPrice)}
-                        </p>
-                      </div>
-                      <p className="tabular text-sm font-medium">{formatUsd(holding.marketValueCents)}</p>
-                    </div>
-                  ))}
-                </div>
+              <div className="min-h-0 flex-1">
+                <PriceChart key={panel.symbol} symbol={panel.label} daily={panel.bars.daily} minute={panel.bars.minute} fit />
               </div>
+              <p className="mt-1 shrink-0 truncate text-xs text-[var(--muted)]">{positionLine(panel)}</p>
             </Card>
           ))}
         </div>

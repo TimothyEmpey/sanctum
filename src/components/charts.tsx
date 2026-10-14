@@ -77,7 +77,18 @@ function candleLabel(t: number, frame: CandleFrame, sameDay: boolean) {
     : { hour: "numeric", minute: "2-digit", timeZone: "America/New_York" });
 }
 
-export function PriceChart({ symbol, daily, minute }: { symbol: string; daily: Ohlc[]; minute: Ohlc[] }) {
+export function PriceChart({
+  symbol,
+  daily,
+  minute,
+  fit = false,
+}: {
+  symbol: string;
+  daily: Ohlc[];
+  minute: Ohlc[];
+  /** Fill the parent instead of using the desk's fixed chart height. */
+  fit?: boolean;
+}) {
   const intraday = useMemo(() => fiveMinuteCandles(minute), [minute]);
   const [frame, setFrame] = useState<CandleFrame>(intraday.length >= 2 ? "5m" : "1D");
   const [hover, setHover] = useState<number | null>(null);
@@ -88,17 +99,17 @@ export function PriceChart({ symbol, daily, minute }: { symbol: string; daily: O
   const up = change >= 0;
 
   return (
-    <div>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-        <div className="flex gap-2">
+    <div className={fit ? "flex h-full min-h-0 flex-col" : undefined}>
+      <div className={fit ? "mb-1 flex shrink-0 items-center justify-between gap-2" : "mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1"}>
+        <div className="flex shrink-0 gap-1">
           {(["5m", "1D"] as const).map((item) => (
-            <Button key={item} type="button" size="sm" variant={item === frame ? "default" : "outline"} onClick={() => { setFrame(item); setHover(null); }}>
+            <Button key={item} type="button" size="sm" variant={item === frame ? "default" : "outline"} className={fit ? "h-7 px-2" : undefined} onClick={() => { setFrame(item); setHover(null); }}>
               {item}
             </Button>
           ))}
         </div>
         {active ? (
-          <p className="tabular w-full text-xs text-[var(--muted)] sm:w-auto">
+          <p className={fit ? "tabular min-w-0 flex-1 truncate text-right text-[11px] text-[var(--muted)]" : "tabular w-full text-xs text-[var(--muted)] sm:w-auto"}>
             O {formatPx(active.open)} H {formatPx(active.high)} L {formatPx(active.low)} C {formatPx(active.close)}{" "}
             <span className={up ? "text-[var(--positive)]" : "text-[var(--negative)]"}>
               {change >= 0 ? "+" : ""}{change.toFixed(2)}
@@ -114,7 +125,7 @@ export function PriceChart({ symbol, daily, minute }: { symbol: string; daily: O
             : `Daily candles for ${symbol} show up once that history is stored.`}
         </p>
       ) : (
-        <CandleSvg symbol={symbol} points={points} frame={frame} hover={hover} onHover={setHover} />
+        <CandleSvg symbol={symbol} points={points} frame={frame} hover={hover} onHover={setHover} fit={fit} />
       )}
     </div>
   );
@@ -126,12 +137,14 @@ function CandleSvg({
   frame,
   hover,
   onHover,
+  fit = false,
 }: {
   symbol: string;
   points: Ohlc[];
   frame: CandleFrame;
   hover: number | null;
   onHover: (index: number | null) => void;
+  fit?: boolean;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 0, h: 0 });
@@ -146,10 +159,10 @@ function CandleSvg({
     return () => observer.disconnect();
   }, []);
 
-  const layout = useMemo(() => layoutCandles(points, size.w, size.h, frame), [points, size, frame]);
+  const layout = useMemo(() => layoutCandles(points, size.w, size.h, frame, fit), [points, size, frame, fit]);
 
   return (
-    <div ref={wrapRef} className="h-[300px] w-full min-w-0 overflow-hidden md:h-[380px]">
+    <div ref={wrapRef} className={fit ? "h-full min-h-0 w-full flex-1 overflow-hidden" : "h-[300px] w-full min-w-0 overflow-hidden md:h-[380px]"}>
       {layout ? (
         <svg
           width={layout.width}
@@ -204,18 +217,18 @@ function CandleSvg({
   );
 }
 
-function layoutCandles(points: Ohlc[], width: number, height: number, frame: CandleFrame) {
-  if (width < 280 || points.length < 2) return null;
-  const padL = 8;
-  const padR = 58;
-  const padT = 16;
-  const axisH = 22;
-  const volH = Math.round(height * 0.18);
-  const gap = 16;
+export function layoutCandles(points: Ohlc[], width: number, height: number, frame: CandleFrame, compact = false) {
+  if (width < (compact ? 120 : 280) || points.length < 2) return null;
+  const padL = compact ? 4 : 8;
+  const padR = compact ? 46 : 58;
+  const padT = compact ? 8 : 16;
+  const axisH = compact ? 16 : 22;
+  const volH = Math.round(height * (compact ? 0.14 : 0.18));
+  const gap = compact ? 6 : 16;
   const volTop = height - axisH - volH;
   const priceBottom = volTop - gap;
   const priceH = priceBottom - padT;
-  if (priceH < 80) return null;
+  if (priceH < (compact ? 28 : 80)) return null;
 
   const low = Math.min(...points.map((point) => point.low));
   const high = Math.max(...points.map((point) => point.high));
