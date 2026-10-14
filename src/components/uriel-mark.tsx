@@ -18,7 +18,7 @@ type Pose =
 
 function spritesFor(pet: "uriel" | "fonzo"): Record<Pose, string> {
   const folder = pet === "fonzo" ? "fonzo" : "uriel";
-  const art = pet === "fonzo" ? "?v=2" : "?v=4";
+  const art = pet === "fonzo" ? "?v=3" : "?v=4";
   return {
     idle: `/${folder}/idle.png${art}`,
     walk: `/${folder}/walk.png${art}`,
