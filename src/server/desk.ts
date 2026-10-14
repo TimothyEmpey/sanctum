@@ -7,6 +7,7 @@ import { alpacaPaperConfigured, alpacaStatus } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { robinhoodStatus } from "@/server/robinhood";
 import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
+import { assetTriggerCaveat, loadSignalMinutes } from "@/server/trigger-note";
 
 export type DeskQuery = { book?: string; asset?: string };
 
@@ -85,6 +86,21 @@ export async function getDesk(query?: DeskQuery) {
   const session = account.sessions.find((row) => row.symbol === asset.symbol && row.sessionDate === sessionDate) ?? null;
   const assetTrades = account.trades.filter((trade) => trade.symbol === asset.symbol);
   const assetOrders = account.orders.filter((order) => order.symbol === asset.symbol);
+  const traded =
+    engineOpen.some((trade) => trade.symbol === asset.symbol) ||
+    assetOrders.some((order) => order.status === "WORKING" && order.purpose === "ENTRY") ||
+    (session?.tradesTaken ?? 0) > 0;
+  const triggerCaveat = assetTriggerCaveat({
+    asset,
+    now,
+    minutes: await loadSignalMinutes(account.id, asset, now),
+    daily: dailyBars.map((bar) => ({ ts: bar.ts.getTime(), close: bar.close })),
+    traded,
+    paused: asset.desk === "fonzo" ? account.fonzoPaused : account.agentPaused,
+    haltReason: account.haltReason,
+    heartbeatAt: heartbeat?.at,
+    riskDecisions: account.decisions,
+  });
   const shareCents = assetShareCents(account.equityCents);
   const shareUsedCents = deployedNotionalCents(
     assetTrades.filter((trade) => trade.status === "OPEN" && trade.origin === "ENGINE"),
@@ -136,6 +152,7 @@ export async function getDesk(query?: DeskQuery) {
     accountOpenPositions: engineOpen.length,
     tradesToday: session?.tradesTaken ?? 0,
     heartbeat,
+    triggerCaveat,
     robinhood: robinhoodStatus(),
     alpaca: alpacaStatus(),
     limits: RISK_LIMITS,

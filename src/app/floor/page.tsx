@@ -93,6 +93,7 @@ export default async function FloorPage() {
                 <PriceChart key={panel.symbol} symbol={panel.label} daily={panel.bars.daily} minute={panel.bars.minute} fit />
               </div>
               <p className="mt-1 shrink-0 truncate text-xs text-[var(--muted)]">{positionLine(panel)}</p>
+              {panel.caveat ? <p className="shrink-0 truncate text-[11px] leading-4 text-[var(--muted)]">{panel.caveat}</p> : null}
             </Card>
           ))}
         </div>

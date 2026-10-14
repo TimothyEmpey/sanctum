@@ -1,7 +1,10 @@
 import { ASSETS, assetLabel, type Asset } from "@/lib/assets";
+import { sessionClock } from "@/lib/market/calendar";
+import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { alpacaPaperConfigured } from "@/server/alpaca";
 import { prisma } from "@/server/db";
-import { alignAlpaca } from "@/server/trading";
+import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
+import { assetTriggerCaveat, loadSignalMinutes } from "@/server/trigger-note";
 
 /** Floor grid: SPY, BTC, then QQQ, ETH. The single-asset desk is unchanged. */
 const FLOOR_SYMBOLS = ["SPY", "BTC/USD", "QQQ", "ETH/USD"] as const;
@@ -43,6 +46,8 @@ async function barsFor(accountId: string, symbol: string) {
 
 export async function getFloor() {
   const now = new Date();
+  const stockClock = sessionClock(now);
+  const cryptoClock = cryptoSessionClock(now);
   const existing = await prisma.account.findFirst({ select: { id: true } });
   if (!existing) return null;
   if (alpacaPaperConfigured()) {
@@ -56,19 +61,50 @@ export async function getFloor() {
     include: {
       holdings: { orderBy: { symbol: "asc" } },
       trades: { where: { status: "OPEN", origin: "ENGINE" }, orderBy: { openedAt: "desc" } },
+      orders: { where: { status: "WORKING", purpose: "ENTRY" }, select: { symbol: true } },
+      sessions: {
+        where: { sessionDate: { in: [stockClock.dateKey, cryptoClock.dateKey] } },
+        select: { symbol: true, sessionDate: true, tradesTaken: true },
+      },
+      decisions: {
+        orderBy: { createdAt: "desc" },
+        take: 40,
+        select: { approved: true, proposal: true, reasons: true, createdAt: true },
+      },
     },
   });
   if (!account) return null;
+  const stockBeat = readHeartbeat();
+  const fonzoBeat = readFonzoHeartbeat();
 
   const panels = await Promise.all(
     FLOOR_SYMBOLS.map(async (symbol) => {
       const asset = ASSETS.find((item) => item.symbol === symbol) as Asset;
-      const bars = await barsFor(account.id, symbol);
+      const [bars, minutes] = await Promise.all([barsFor(account.id, symbol), loadSignalMinutes(account.id, asset, now)]);
       const mark = bars.mark;
+      const dateKey = asset.market === "crypto" ? cryptoClock.dateKey : stockClock.dateKey;
+      const session = account.sessions.find((row) => row.symbol === symbol && row.sessionDate === dateKey);
+      const traded =
+        account.trades.some((trade) => trade.symbol === symbol) ||
+        account.orders.some((order) => order.symbol === symbol) ||
+        (session?.tradesTaken ?? 0) > 0;
+      const heartbeat = asset.desk === "fonzo" ? fonzoBeat : stockBeat;
+      const caveat = assetTriggerCaveat({
+        asset,
+        now,
+        minutes,
+        daily: bars.daily.map((bar) => ({ ts: bar.t, close: bar.close })),
+        traded,
+        paused: asset.desk === "fonzo" ? account.fonzoPaused : account.agentPaused,
+        haltReason: account.haltReason,
+        heartbeatAt: heartbeat?.at,
+        riskDecisions: account.decisions,
+      });
       return {
         symbol,
         label: assetLabel(asset),
         workerName: asset.desk === "fonzo" ? "Fonzo" : "Uriel",
+        caveat,
         mark,
         bars: { daily: bars.daily, minute: bars.minute },
         openTrades: account.trades

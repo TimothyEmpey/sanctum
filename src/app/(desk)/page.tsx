@@ -3,6 +3,7 @@ import { BookBanner, Metric, moneyTone, PositionBook } from "@/components/desk-w
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle } from "@/components/ui/card";
 import { formatPx, formatUsd } from "@/lib/market/time";
+import { heartbeatFresh } from "@/lib/strategy/trigger-caveat";
 import { getDesk } from "@/server/desk";
 
 export default async function DashboardPage({
@@ -16,8 +17,7 @@ export default async function DashboardPage({
     desk.assetClass === "crypto"
       ? desk.clock.phase === "signal" || desk.clock.phase === "wait"
       : desk.clock.phase === "closed" || desk.clock.phase === "idle";
-  const freshFor = quiet ? 75 * 60_000 : 90_000;
-  const workerFresh = desk.heartbeat ? Date.now() - new Date(desk.heartbeat.at).getTime() < freshFor : false;
+  const workerFresh = heartbeatFresh(desk.heartbeat?.at, quiet);
 
   return (
     <div className="space-y-5">
@@ -58,6 +58,7 @@ export default async function DashboardPage({
           <p className="text-xs leading-5 text-[var(--muted)]">{desk.alpaca.configured ? desk.alpaca.detail : desk.robinhood.detail}</p>
           {desk.session?.vwap ? <p className="text-sm">VWAP {formatPx(desk.session.vwap)}</p> : null}
           {desk.session?.standDown ? <p className="text-sm">{desk.session.standDown}</p> : null}
+          {desk.triggerCaveat ? <p className="text-xs leading-5 text-[var(--muted)]">{desk.triggerCaveat}</p> : null}
         </Card>
       </section>
       <PositionBook desk={desk} />
