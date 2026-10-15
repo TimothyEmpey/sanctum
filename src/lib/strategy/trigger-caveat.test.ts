@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { etInstant } from "@/lib/market/time";
-import { blockingReason, describeAssetTrigger, describeNqTrigger } from "@/lib/strategy/trigger-caveat";
+import { blockingReason, describeAssetTrigger, describeNqTrigger, describeSpyTrigger } from "@/lib/strategy/trigger-caveat";
 import type { Bar } from "@/lib/strategy/intraday-momentum";
 
 function bar(ts: number, close: number, open = close): Bar {
@@ -150,5 +150,7 @@ describe("Nasdaq trigger caveat", () => {
     );
     expect(describeNqTrigger("passed", null)).toBe("Buy was flagged. No order was sent.");
     expect(describeNqTrigger("passed", "Uriel is paused.")).toBe("Buy is flagged. No order: Uriel is paused.");
+    expect(describeSpyTrigger("waiting", null)).toBe("Playbook trigger is not in yet.");
+    expect(describeSpyTrigger("passed", null)).toBe("Buy was flagged. No order was sent.");
   });
 });

@@ -75,4 +75,27 @@ describe("alpaca paper broker", () => {
     expect(Number(stop.limit_price)).toBeLessThan(Number(stop.stop_price));
     expect(() => paperCryptoLimitBuy({ symbol: "SPY", quantity: 1, limitPrice: 10, clientOrderId: "nope" })).toThrow(/untouchable/);
   });
+
+  it("allows a fractional SPY bracket and keeps NQ whole", () => {
+    expect(
+      paperBracketOrder({
+        symbol: "SPY",
+        quantity: 0.324,
+        limitPrice: 770,
+        stopPrice: 768,
+        targetPrice: 774,
+        clientOrderId: "uriel-spy-fraction",
+      }),
+    ).toMatchObject({ symbol: "SPY", qty: "0.324", time_in_force: "day" });
+    expect(() =>
+      paperBracketOrder({
+        symbol: "NQ",
+        quantity: 0.5,
+        limitPrice: 500,
+        stopPrice: 490,
+        targetPrice: 525,
+        clientOrderId: "uriel-nq-fraction",
+      }),
+    ).toThrow(/whole number/);
+  });
 });

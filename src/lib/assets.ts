@@ -1,6 +1,6 @@
-import { STRATEGY_ID, STRATEGY_NAME } from "@/lib/risk/constants";
 import { MOMENTUM_SETUP } from "@/lib/strategy/intraday-momentum";
 import { NQ_SETUP, NQ_STRATEGY_ID } from "@/lib/strategy/nq-sweep";
+import { SPY_SETUP, SPY_STRATEGY_ID, SPY_STRATEGY_NAME } from "@/lib/strategy/spy-structure";
 
 /** Sizing book. The Alpaca paper account is larger and is not reset. */
 export const WORKING_BOOK_CENTS = 100_000;
@@ -29,13 +29,13 @@ export const SPY_ASSET: Asset = {
   desk: "uriel",
   assetClass: "stocks",
   market: "nyse",
-  strategyId: STRATEGY_ID,
-  strategyName: STRATEGY_NAME,
-  setup: MOMENTUM_SETUP,
-  wholeShares: true,
-  quantityStep: 1,
+  strategyId: SPY_STRATEGY_ID,
+  strategyName: SPY_STRATEGY_NAME,
+  setup: SPY_SETUP,
+  wholeShares: false,
+  quantityStep: 0.001,
   playbook:
-    "The playbook is the SPY last-half-hour rule from Gao, Han, Li, and Zhou, Journal of Financial Economics (2018). The signal is the return from the previous close to 10:00 ET. If that return is positive, Uriel buys at 3:30 PM ET and sells at the cash close. If it is not, Uriel does not trade. The paper shorts a down signal. This desk does not, so it takes only the long side of that result. On 1993–2013 data the long-and-short version in the paper made about 6.67% a year before costs, Sharpe about 1.08. After the bid-ask spread that was about 4.46% a year. A long-only account is a smaller slice, and the sample ends in 2013. The stop is 2% under the entry so the risk engine can still buy with the cash on hand. The paper does not use a profit target. The model writes a journal line after the fact. It does not choose the order.",
+    "SPY follows the chart. An uptrend is higher highs and higher lows. Uriel buys after price trades under a 15-minute swing low and a later 15-minute candle closes above the high that was in place. If that turn is missed, a 15-minute uptrend can still be bought after a 5-minute close under its swing low and a 5-minute close back above its swing high, as long as that dip does not break the 15-minute low. The stop is the sweep or retrace low. The target is the next high above the entry, or one times the risk when no high is drawn. Shorts stay off. One entry a day, from the open until the cash flatten. The position is out at the target, the stop, or the cash close. Size can be a fraction of a share so the 25% share can fund it. The model does not choose the order.",
 };
 
 export const NQ_ASSET: Asset = {
@@ -136,14 +136,14 @@ export function viewQuery(asset: Asset) {
 const STOCK_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
-  "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
+  "Size is floored from 2% of the $1,000 working book divided by the stop distance. SPY can be a fraction of a share. NQ stays a whole contract.",
   "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that symbol for the session.",
   "One entry a day for each symbol. Two open positions and 4% combined open risk across the shared book.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
   "Uriel trades SPY and NQ. Fonzo trades BTC and ETH. Anything else is untouchable.",
-  "SPY is sold at the cash close. NQ is out at the target, the stop, or the cash close.",
+  "SPY and NQ are out at the target, the stop, or the cash close.",
   "The working book is under $25,000, so stock day trades stop at 3 in 5 business days.",
 ];
 

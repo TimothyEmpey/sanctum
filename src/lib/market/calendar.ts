@@ -109,7 +109,7 @@ export function sessionClock(now: Date): SessionClock {
     tradingDay,
     entryWindowOpen: phase === "entry",
     flattenDue: phase === "flatten",
-    label: phase === "manage" && z.minutes < lastHalf ? "Waiting for the last half-hour" : labels[phase],
+    label: phase === "manage" && z.minutes < lastHalf ? "Cash session" : labels[phase],
   };
 }
 

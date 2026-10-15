@@ -76,8 +76,11 @@ export function paperBracketOrder(input: {
 }) {
   const asset = assetBySymbol(input.symbol);
   if (!asset || asset.assetClass !== "stocks") throw new UntouchableSymbolError(input.symbol);
-  if (!Number.isInteger(input.quantity) || input.quantity < 1) {
+  if (asset.wholeShares && (!Number.isInteger(input.quantity) || input.quantity < 1)) {
     throw new Error("Alpaca paper stock orders must be a positive whole number of shares.");
+  }
+  if (!asset.wholeShares && !(input.quantity > 0)) {
+    throw new Error("Alpaca paper stock orders need a positive quantity.");
   }
   if (!(input.stopPrice > 0) || input.stopPrice >= input.limitPrice) {
     throw new Error("Refusing a paper order without a stop below the limit.");
@@ -87,7 +90,7 @@ export function paperBracketOrder(input: {
   }
   return {
     symbol: input.symbol,
-    qty: String(input.quantity),
+    qty: formatOrderQty(input.quantity, asset.wholeShares),
     side: "buy",
     type: "limit",
     time_in_force: "day",
@@ -232,7 +235,7 @@ export function sellPaperShares(symbol: string, quantity: number) {
       qty: formatOrderQty(quantity, asset.wholeShares),
       side: "sell",
       type: "market",
-      time_in_force: asset.wholeShares ? "day" : "ioc",
+      time_in_force: asset.market === "crypto" ? "ioc" : "day",
     }),
   });
 }

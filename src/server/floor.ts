@@ -4,7 +4,7 @@ import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { alpacaPaperConfigured } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
-import { assetTriggerCaveat, loadDayMinutes, loadSignalMinutes } from "@/server/trigger-note";
+import { assetTriggerCaveat, loadDayMinutes, loadSignalMinutes, loadStructureMinutes } from "@/server/trigger-note";
 
 /** Floor grid: SPY, BTC, then NQ, ETH. The single-asset desk is unchanged. */
 const FLOOR_SYMBOLS = ["SPY", "BTC/USD", "NQ", "ETH/USD"] as const;
@@ -83,7 +83,11 @@ export async function getFloor() {
       const asset = ASSETS.find((item) => item.symbol === symbol) as Asset;
       const [bars, minutes] = await Promise.all([
         barsFor(account.id, symbol),
-        asset.symbol === "NQ" ? loadDayMinutes(account.id, "NQ", stockClock.dateKey) : loadSignalMinutes(account.id, asset, now),
+        asset.symbol === "NQ"
+          ? loadDayMinutes(account.id, "NQ", stockClock.dateKey)
+          : asset.symbol === "SPY"
+            ? loadStructureMinutes(account.id, "SPY", stockClock.dateKey)
+            : loadSignalMinutes(account.id, asset, now),
       ]);
       const mark = bars.mark;
       const dateKey = asset.market === "crypto" ? cryptoClock.dateKey : stockClock.dateKey;

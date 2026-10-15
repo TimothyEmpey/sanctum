@@ -1,10 +1,11 @@
 import { normalizeSymbol, type Asset } from "@/lib/assets";
 import { cryptoSessionClock } from "@/lib/market/crypto-clock";
-import { sessionClock } from "@/lib/market/calendar";
+import { previousBusinessDays, sessionClock } from "@/lib/market/calendar";
 import { etInstant, etParts } from "@/lib/market/time";
 import type { Bar } from "@/lib/strategy/intraday-momentum";
 import { evaluateNqSweep } from "@/lib/strategy/nq-sweep";
-import { blockingReason, describeAssetTrigger, describeNqTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
+import { evaluateSpyStructure } from "@/lib/strategy/spy-structure";
+import { blockingReason, describeAssetTrigger, describeNqTrigger, describeSpyTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
 import { prisma } from "@/server/db";
 
 function proposalSymbol(proposal: unknown) {
@@ -69,6 +70,16 @@ export async function loadDayMinutes(accountId: string, symbol: string, dateKey:
   }));
 }
 
+/** Today plus the previous session. SPY structure can use yesterday's swings. The signal still has to print today. */
+export async function loadStructureMinutes(accountId: string, symbol: string, dateKey: string): Promise<Bar[]> {
+  const prior = previousBusinessDays(dateKey, 1)[0];
+  const [today, yesterday] = await Promise.all([
+    loadDayMinutes(accountId, symbol, dateKey),
+    prior ? loadDayMinutes(accountId, symbol, prior) : Promise.resolve([]),
+  ]);
+  return [...yesterday, ...today];
+}
+
 export async function loadSignalMinutes(accountId: string, asset: Asset, now: Date): Promise<Bar[]> {
   const stock = sessionClock(now);
   const crypto = cryptoSessionClock(now);
@@ -129,6 +140,20 @@ export function assetTriggerCaveat(input: {
       tradesTaken: 0,
     });
     return describeNqTrigger(view.state, block);
+  }
+  if (input.asset.symbol === "SPY") {
+    if (input.traded) return null;
+    if (!stock.tradingDay) return "Cash market is closed.";
+    const prior = priorDay(input.daily, dateKey);
+    const view = evaluateSpyStructure({
+      now: input.now,
+      bars: input.minutes,
+      priorHigh: prior?.high ?? null,
+      priorLow: prior?.low ?? null,
+      hasOpenPosition: false,
+      tradesTaken: 0,
+    });
+    return describeSpyTrigger(view.state, block);
   }
   return describeAssetTrigger({
     market: input.asset.market,

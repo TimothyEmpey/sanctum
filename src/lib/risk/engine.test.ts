@@ -305,6 +305,57 @@ describe("risk engine", () => {
     expect(late.reasons.join(" ")).toMatch(/New positions are closed/);
   });
 
+  it("lets a fractional SPY structure buy use the morning and the 25% share", () => {
+    const decision = evaluateRisk(
+      proposal({
+        symbol: "SPY",
+        setup: "SPY_STRUCTURE",
+        now: etInstant("2026-10-02", 10, 46),
+        entryPrice: 770,
+        stopPrice: 768,
+        targetPrice: 774,
+        requestedShares: 10,
+        quantityStep: 0.001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
+    );
+    expect(decision.approved).toBe(true);
+    expect(decision.shares).toBeGreaterThan(0);
+    expect(decision.shares).toBeLessThan(1);
+    expect(decision.computed.notionalCents).toBeLessThanOrEqual(25_000);
+    expect(decision.reasons.join(" ")).toMatch(/25%/);
+    expect(decision.reasons.join(" ")).not.toMatch(/New positions are closed/);
+    const shut = evaluateRisk(
+      proposal({
+        symbol: "SPY",
+        setup: "SPY_STRUCTURE",
+        now: etInstant("2026-10-02", 15, 59),
+        entryPrice: 770,
+        stopPrice: 768,
+        targetPrice: 774,
+        requestedShares: 0.2,
+        quantityStep: 0.001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
+    );
+    expect(shut.approved).toBe(false);
+    expect(shut.reasons.join(" ")).toMatch(/New positions are closed/);
+  });
+
   it("refuses one Nasdaq contract when the 25% share cannot pay for it", () => {
     const decision = evaluateRisk(
       proposal({
@@ -355,7 +406,8 @@ describe("firewall", () => {
     expect(() =>
       assertAgentExit({ symbol: "SPY", quantity: 8, agentQuantity: 8, baselineQuantity: 10 }),
     ).not.toThrow();
-    expect(() => assertAgentExit({ symbol: "SPY", quantity: 1.5, agentQuantity: 2, baselineQuantity: 0 })).toThrow(/whole number/);
+    expect(() => assertAgentExit({ symbol: "NQ", quantity: 1.5, agentQuantity: 2, baselineQuantity: 0 })).toThrow(/whole number/);
+    expect(() => assertAgentExit({ symbol: "SPY", quantity: 0.25, agentQuantity: 0.25, baselineQuantity: 0 })).not.toThrow();
     expect(() => assertAgentExit({ symbol: "BTC/USD", quantity: 0.01, agentQuantity: 0.01, baselineQuantity: 0 })).not.toThrow();
   });
 });
@@ -367,7 +419,7 @@ describe("calendar", () => {
     expect(sessionClock(etInstant("2026-10-02", 9, 40)).phase).toBe("opening_range");
     expect(sessionClock(etInstant("2026-10-02", 10, 0)).phase).toBe("manage");
     expect(sessionClock(etInstant("2026-10-02", 10, 0)).entryWindowOpen).toBe(false);
-    expect(sessionClock(etInstant("2026-10-02", 10, 0)).label).toBe("Waiting for the last half-hour");
+    expect(sessionClock(etInstant("2026-10-02", 10, 0)).label).toBe("Cash session");
     expect(sessionClock(etInstant("2026-10-02", 15, 30)).phase).toBe("entry");
     expect(sessionClock(etInstant("2026-10-02", 15, 30)).entryWindowOpen).toBe(true);
     expect(sessionClock(etInstant("2026-10-02", 15, 35)).phase).toBe("manage");

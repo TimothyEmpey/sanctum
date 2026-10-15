@@ -21,6 +21,7 @@ import {
   type MomentumProposal,
 } from "@/lib/strategy/intraday-momentum";
 import { evaluateNqSweep, NQ_SETUP, nqWatchOpen, type NqProposal } from "@/lib/strategy/nq-sweep";
+import { evaluateSpyStructure, SPY_SETUP, spyWatchOpen, type SpyProposal } from "@/lib/strategy/spy-structure";
 import { prisma } from "@/server/db";
 import { deterministicJournal, maybeNarrate } from "@/server/journal";
 import {
@@ -67,7 +68,7 @@ export type FonzoHeartbeat = {
   mode: string;
 };
 
-type EntryProposal = MomentumProposal | CryptoProposal | NqProposal;
+type EntryProposal = MomentumProposal | CryptoProposal | NqProposal | SpyProposal;
 
 function readJson<T>(file: string): T | null {
   try {
@@ -610,7 +611,7 @@ export async function flattenAgentTrades(
       });
       const asset = assetBySymbol(trade.symbol);
       const sold = await sellPaperShares(trade.symbol, trade.quantity);
-      if (asset && !asset.wholeShares && sold.status !== "filled") {
+      if (asset?.market === "crypto" && sold.status !== "filled") {
         await logEvent(accountId, "BROKER", `${trade.symbol} flatten was not filled. It will retry.`, "warn");
         continue;
       }
@@ -766,9 +767,7 @@ async function executeProposal(
       const exitLine =
         asset.market === "crypto"
           ? "Exit is 24:00 UTC."
-          : asset.symbol === "NQ"
-            ? "Exit is the target, the stop, or the cash close."
-            : "Exit is the cash close.";
+          : "Exit is the target, the stop, or the cash close.";
       await logEvent(
         account.id,
         "ENTRY",
@@ -1132,6 +1131,8 @@ async function considerStock(
     maxTrades: RISK_LIMITS.maxTradesPerDay,
   };
   const esBars = asset.symbol === "NQ" ? await todayBars(account.id, "ES", clock.dateKey, "nyse") : [];
+  const priorKey = previousBusinessDays(clock.dateKey, 1)[0];
+  const priorSession = asset.symbol === "SPY" && priorKey ? await todayBars(account.id, asset.symbol, priorKey, "nyse") : [];
   const view =
     asset.symbol === "NQ"
       ? evaluateNqSweep({
@@ -1144,7 +1145,17 @@ async function considerStock(
           tradesTaken: session.tradesTaken,
           maxTrades: RISK_LIMITS.maxTradesPerDay,
         })
-      : evaluateIntradayMomentum(context);
+      : asset.symbol === "SPY"
+        ? evaluateSpyStructure({
+            now,
+            bars: [...priorSession, ...bars],
+            priorHigh: prior?.high ?? null,
+            priorLow: prior?.low ?? null,
+            hasOpenPosition: open > 0 || pendingEntry > 0,
+            tradesTaken: session.tradesTaken,
+            maxTrades: RISK_LIMITS.maxTradesPerDay,
+          })
+        : evaluateIntradayMomentum(context);
   await prisma.strategySession.update({
     where: { id: session.id },
     data: { orHigh: view.orHigh, orLow: view.orLow, vwap: view.vwap, standDown: view.standDown },
@@ -1152,7 +1163,7 @@ async function considerStock(
   if (view.standDown && session.standDown !== view.standDown) {
     await logEvent(account.id, "STAND_DOWN", `${asset.symbol}: ${view.standDown}`);
   }
-  if (!view.proposal) return;
+  if (!view.proposal || ("state" in view && view.state !== "ready")) return;
   const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
   const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
   await executeProposal(freshAccount, freshSession, equityCents, clock, view.proposal, mark, now, [...STOCK_SYMBOLS]);
@@ -1268,7 +1279,7 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
       }
     } else if (clock.minutes >= retiredFlattenMinute(clock.earlyClose)) {
       const closed = await flattenAgentTrades(account.id, now, "FLATTEN", {
-        exceptSetups: [MOMENTUM_SETUP, NQ_SETUP],
+        exceptSetups: [MOMENTUM_SETUP, NQ_SETUP, SPY_SETUP],
         symbols: [...STOCK_SYMBOLS],
       });
       if (closed.length > 0) {
@@ -1281,9 +1292,10 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
   equityCents = book.equityCents;
   account = book.account;
   const nqOpen = nqWatchOpen(now);
-  if ((clock.entryWindowOpen || nqOpen) && !account.agentPaused && !haltReason) {
+  const spyOpen = spyWatchOpen(now);
+  if ((spyOpen || nqOpen) && !account.agentPaused && !haltReason) {
     for (const asset of STOCK_ASSETS) {
-      if (asset.symbol === "SPY" && !clock.entryWindowOpen) continue;
+      if (asset.symbol === "SPY" && !spyOpen) continue;
       if (asset.symbol === "NQ" && !nqOpen) continue;
       const mark = book.marks[asset.symbol];
       if (mark == null) continue;
