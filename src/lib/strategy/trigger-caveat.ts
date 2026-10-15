@@ -3,6 +3,7 @@ import { CRYPTO_ENTRY_GRACE, CRYPTO_ENTRY_START, CRYPTO_SIGNAL_END, cryptoSessio
 import { etParts, roundPrice } from "@/lib/market/time";
 import { firstHalfReturn } from "@/lib/strategy/crypto-momentum";
 import { priceAtTen, type Bar } from "@/lib/strategy/intraday-momentum";
+import type { NqState } from "@/lib/strategy/nq-sweep";
 
 export type TriggerState = "waiting" | "flat" | "up" | "missing";
 
@@ -63,6 +64,16 @@ export function describeAssetTrigger(input: {
   const block = input.haltReason ?? (input.paused ? `${input.workerName} is paused.` : null) ?? (input.workerFresh ? null : "Worker is offline.") ?? input.riskReason;
   if (block) return `Buy is flagged. No order: ${block}`;
   if (window.passed) return "Buy was flagged. No order was sent.";
+  return null;
+}
+
+/** Nasdaq morning sequence. A short setup is a flat day. The 10:00 stock test does not apply. */
+export function describeNqTrigger(state: NqState, block: string | null) {
+  if (state === "waiting") return "Playbook trigger is not in yet.";
+  if (state === "missing") return "Signal prices are missing. This is not a flat day.";
+  if (state === "flat") return "Playbook trigger was not hit.";
+  if (block) return `Buy is flagged. No order: ${block}`;
+  if (state === "passed") return "Buy was flagged. No order was sent.";
   return null;
 }
 

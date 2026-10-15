@@ -49,17 +49,17 @@ describe("alpaca paper broker", () => {
     ).toThrow(/stop/);
   });
 
-  it("builds a QQQ bracket and a crypto limit without a take-profit", () => {
+  it("builds an NQ bracket and a crypto limit without a take-profit", () => {
     expect(
       paperBracketOrder({
-        symbol: "QQQ",
+        symbol: "NQ",
         quantity: 1,
         limitPrice: 500,
         stopPrice: 490,
         targetPrice: 525,
-        clientOrderId: "uriel-qqq",
+        clientOrderId: "uriel-nq",
       }).symbol,
-    ).toBe("QQQ");
+    ).toBe("NQ");
     expect(
       paperCryptoLimitBuy({ symbol: "BTC/USD", quantity: 0.01, limitPrice: 100_000, clientOrderId: "fonzo-btc" }),
     ).toMatchObject({

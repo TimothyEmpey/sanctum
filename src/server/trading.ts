@@ -20,7 +20,7 @@ import {
   MOMENTUM_SETUP,
   type MomentumProposal,
 } from "@/lib/strategy/intraday-momentum";
-import { evaluateQqqMomentum } from "@/lib/strategy/qqq-momentum";
+import { evaluateNqSweep, NQ_SETUP, nqWatchOpen, type NqProposal } from "@/lib/strategy/nq-sweep";
 import { prisma } from "@/server/db";
 import { deterministicJournal, maybeNarrate } from "@/server/journal";
 import {
@@ -50,7 +50,7 @@ export type Heartbeat = {
   phase: string;
   label: string;
   spy: number | null;
-  qqq?: number | null;
+  nq?: number | null;
   paused: boolean;
   haltReason: string | null;
   mode: string;
@@ -67,7 +67,7 @@ export type FonzoHeartbeat = {
   mode: string;
 };
 
-type EntryProposal = MomentumProposal | CryptoProposal;
+type EntryProposal = MomentumProposal | CryptoProposal | NqProposal;
 
 function readJson<T>(file: string): T | null {
   try {
@@ -173,6 +173,29 @@ async function refreshIntraday(accountId: string, asset: Asset, now: Date) {
   await ingestSymbol(accountId, asset.symbol, asset.yahoo, "1m", range);
 }
 
+/**
+ * S&P futures are a filter for NQ, stored as ES from Yahoo ES=F.
+ * Alpaca's ES symbol is a stock. Do not send ES to the broker.
+ */
+async function refreshEsFilter(accountId: string, hot: boolean, now: Date) {
+  await ingestSymbol(accountId, "ES", "ES=F", hot ? "1m" : "1d", hot ? "1d" : "5d");
+  const latest = await prisma.marketBar.findFirst({
+    where: { accountId, symbol: "ES", timeframe: "1m" },
+    orderBy: { ts: "desc" },
+  });
+  const age = latest ? now.getTime() - latest.ts.getTime() : Number.POSITIVE_INFINITY;
+  if (!hot && (!latest || age >= 7 * 24 * 60 * 60 * 1000)) {
+    await ingestSymbol(accountId, "ES", "ES=F", "1m", age < 2 * 24 * 60 * 60 * 1000 ? "1d" : "5d");
+  }
+  for (const [symbol, yahoo] of [
+    ["NQ", "NQ=F"],
+    ["ES", "ES=F"],
+  ] as const) {
+    const dailyCount = await prisma.marketBar.count({ where: { accountId, symbol, timeframe: "1d" } });
+    if (dailyCount < 5) await ingestSymbol(accountId, symbol, yahoo, "1d", "5d", true);
+  }
+}
+
 async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, now: Date, which: "stock" | "crypto") {
   const last = which === "stock" ? lastStockFetch : lastCryptoFetch;
   if (hot || now.getTime() - last > 5 * 60_000) {
@@ -182,6 +205,7 @@ async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, n
       await ingestSymbol(accountId, asset.symbol, asset.yahoo, hot ? "1m" : "1d", hot ? "1d" : "5d");
       if (!hot) await refreshIntraday(accountId, asset, now);
     }
+    if (which === "stock") await refreshEsFilter(accountId, hot, now);
   }
   if (!hot) {
     for (const asset of assets) {
@@ -529,17 +553,18 @@ export async function flattenAgentTrades(
   accountId: string,
   now = new Date(),
   purpose = "FLATTEN",
-  options?: { exceptSetup?: string; symbols?: string[] },
+  options?: { exceptSetup?: string; exceptSetups?: string[]; symbols?: string[] },
 ) {
   const open = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
   const allowed = options?.symbols ? new Set(options.symbols) : null;
+  const kept = new Set([...(options?.exceptSetup ? [options.exceptSetup] : []), ...(options?.exceptSetups ?? [])]);
   const targets = open.filter((trade) => {
     if (allowed && !allowed.has(trade.symbol)) return false;
-    if (options?.exceptSetup && trade.setup === options.exceptSetup) return false;
+    if (kept.has(trade.setup)) return false;
     return true;
   });
   const closed: string[] = [];
-  if (!options?.exceptSetup && alpacaPaperConfigured()) {
+  if (kept.size === 0 && alpacaPaperConfigured()) {
     const entries = await prisma.order.findMany({
       where: {
         accountId,
@@ -568,7 +593,7 @@ export async function flattenAgentTrades(
     for (const order of working) {
       if (!order.brokerOrderId || order.purpose === "ENTRY") continue;
       if (allowed && !allowed.has(order.symbol)) continue;
-      if (options?.exceptSetup && (!order.tradeId || !targetIds.has(order.tradeId))) continue;
+      if (kept.size > 0 && (!order.tradeId || !targetIds.has(order.tradeId))) continue;
       try {
         await cancelPaperOrder(order.brokerOrderId);
       } catch {
@@ -656,6 +681,14 @@ async function executeProposal(
     await logEvent(account.id, "RISK_BLOCK", "Live and paper execution are long-only.", "warn");
     return;
   }
+  if (alpacaPaperConfigured() && proposal.symbol === "NQ") {
+    await prisma.strategySession.update({
+      where: { id: session.id },
+      data: { lastSignalBarTs: new Date(proposal.signalBarTs) },
+    });
+    await logEvent(account.id, "BROKER", "Alpaca paper has no Nasdaq futures contract. No order was sent.", "warn");
+    return;
+  }
 
   const reserved = notionalCents(decision.shares, proposal.entryPrice);
   if (alpacaPaperConfigured()) {
@@ -730,7 +763,12 @@ async function executeProposal(
         where: { id: session.id },
         data: { tradesTaken: { increment: 1 }, lastSignalBarTs: new Date(proposal.signalBarTs) },
       });
-      const exitLine = asset.market === "crypto" ? "Exit is 24:00 UTC." : "Exit is the cash close.";
+      const exitLine =
+        asset.market === "crypto"
+          ? "Exit is 24:00 UTC."
+          : asset.symbol === "NQ"
+            ? "Exit is the target, the stop, or the cash close."
+            : "Exit is the cash close.";
       await logEvent(
         account.id,
         "ENTRY",
@@ -1093,7 +1131,20 @@ async function considerStock(
     tradesTaken: session.tradesTaken,
     maxTrades: RISK_LIMITS.maxTradesPerDay,
   };
-  const view = asset.symbol === "QQQ" ? evaluateQqqMomentum(context) : evaluateIntradayMomentum(context);
+  const esBars = asset.symbol === "NQ" ? await todayBars(account.id, "ES", clock.dateKey, "nyse") : [];
+  const view =
+    asset.symbol === "NQ"
+      ? evaluateNqSweep({
+          now,
+          bars,
+          esBars,
+          priorHigh: prior?.high ?? null,
+          priorLow: prior?.low ?? null,
+          hasOpenPosition: open > 0 || pendingEntry > 0,
+          tradesTaken: session.tradesTaken,
+          maxTrades: RISK_LIMITS.maxTradesPerDay,
+        })
+      : evaluateIntradayMomentum(context);
   await prisma.strategySession.update({
     where: { id: session.id },
     data: { orHigh: view.orHigh, orLow: view.orLow, vwap: view.vwap, standDown: view.standDown },
@@ -1217,7 +1268,7 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
       }
     } else if (clock.minutes >= retiredFlattenMinute(clock.earlyClose)) {
       const closed = await flattenAgentTrades(account.id, now, "FLATTEN", {
-        exceptSetup: MOMENTUM_SETUP,
+        exceptSetups: [MOMENTUM_SETUP, NQ_SETUP],
         symbols: [...STOCK_SYMBOLS],
       });
       if (closed.length > 0) {
@@ -1229,8 +1280,11 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
   book = await loadBook(account.id);
   equityCents = book.equityCents;
   account = book.account;
-  if (clock.entryWindowOpen && !account.agentPaused && !haltReason) {
+  const nqOpen = nqWatchOpen(now);
+  if ((clock.entryWindowOpen || nqOpen) && !account.agentPaused && !haltReason) {
     for (const asset of STOCK_ASSETS) {
+      if (asset.symbol === "SPY" && !clock.entryWindowOpen) continue;
+      if (asset.symbol === "NQ" && !nqOpen) continue;
       const mark = book.marks[asset.symbol];
       if (mark == null) continue;
       const fresh = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
@@ -1260,7 +1314,7 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
     phase: clock.phase,
     label: clock.label,
     spy: finalBook.marks.SPY ?? null,
-    qqq: finalBook.marks.QQQ ?? null,
+    nq: finalBook.marks.NQ ?? null,
     paused: account.agentPaused,
     haltReason,
     mode: account.mode,
@@ -1269,8 +1323,8 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
   if (now.getTime() - lastHeartbeatEvent > 10 * 60_000) {
     lastHeartbeatEvent = now.getTime();
     const spy = beat.spy?.toFixed(2) ?? "—";
-    const qqq = beat.qqq?.toFixed(2) ?? "—";
-    await logEvent(account.id, "HEARTBEAT", `${clock.label}. SPY ${spy}. QQQ ${qqq}.`);
+    const nq = beat.nq?.toFixed(2) ?? "—";
+    await logEvent(account.id, "HEARTBEAT", `${clock.label}. SPY ${spy}. NQ ${nq}.`);
   }
   return { ok: true, beat };
 }

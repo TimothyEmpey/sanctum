@@ -1,5 +1,6 @@
 import { STRATEGY_ID, STRATEGY_NAME } from "@/lib/risk/constants";
 import { MOMENTUM_SETUP } from "@/lib/strategy/intraday-momentum";
+import { NQ_SETUP, NQ_STRATEGY_ID } from "@/lib/strategy/nq-sweep";
 
 /** Sizing book. The Alpaca paper account is larger and is not reset. */
 export const WORKING_BOOK_CENTS = 100_000;
@@ -37,19 +38,19 @@ export const SPY_ASSET: Asset = {
     "The playbook is the SPY last-half-hour rule from Gao, Han, Li, and Zhou, Journal of Financial Economics (2018). The signal is the return from the previous close to 10:00 ET. If that return is positive, Uriel buys at 3:30 PM ET and sells at the cash close. If it is not, Uriel does not trade. The paper shorts a down signal. This desk does not, so it takes only the long side of that result. On 1993–2013 data the long-and-short version in the paper made about 6.67% a year before costs, Sharpe about 1.08. After the bid-ask spread that was about 4.46% a year. A long-only account is a smaller slice, and the sample ends in 2013. The stop is 2% under the entry so the risk engine can still buy with the cash on hand. The paper does not use a profit target. The model writes a journal line after the fact. It does not choose the order.",
 };
 
-export const QQQ_ASSET: Asset = {
-  symbol: "QQQ",
-  yahoo: "QQQ",
+export const NQ_ASSET: Asset = {
+  symbol: "NQ",
+  yahoo: "NQ=F",
   desk: "uriel",
   assetClass: "stocks",
   market: "nyse",
-  strategyId: "qqq-intraday-momentum-2018",
-  strategyName: "QQQ last half-hour, long-only",
-  setup: MOMENTUM_SETUP,
+  strategyId: NQ_STRATEGY_ID,
+  strategyName: "NQ liquidity sweep, long-only",
+  setup: NQ_SETUP,
   wholeShares: true,
   quantityStep: 1,
   playbook:
-    "QQQ uses the same last-half-hour clock as SPY. Gao, Han, Li, and Zhou reported that intraday pattern in the most actively traded ETFs, including the Nasdaq ETF. A 2026 replication of the rule on QQQ did not clear a 2 basis point round trip. Uriel still runs the published long-only rule: buy at 3:30 PM ET only when the return from the previous close to 10:00 ET is positive, and sell at the cash close. The stop is 2% under the entry. This is not a claim that QQQ will earn the SPY sample return.",
+    "NQ is the Nasdaq-100 futures market. The long setup is a sweep of the prior day's low, a five-minute break of structure up, then a one-minute retrace and a one-minute break back up. The S&P futures have to break structure the same way by 10:20 ET or there is no trade. The buy is only that long continuation, from 9:30 to 10:30 ET. Shorts stay off. The stop is the retrace low and the target is the next high. This is not a claim on anyone's reported win rate. One entry a day. The position is out at the target, the stop, or the cash close.",
 };
 
 export const BTC_ASSET: Asset = {
@@ -82,7 +83,7 @@ export const ETH_ASSET: Asset = {
     "Ethereum uses the same UTC clock as Bitcoin. Wen, Bouri, Xu, and Zhao, North American Journal of Economics and Finance (2022), found intraday return predictability in Ethereum as well as Bitcoin, Litecoin, and Ripple, from March 2013 through May 2020. A timing strategy in that sample beat buy-and-hold. Fonzo does not invent a separate ETH return. The signal is the 00:00–00:30 UTC return. If it is positive, Fonzo buys at 23:30 UTC and sells at 24:00 UTC. If it is not, Fonzo stays flat. The stop is 2% under the entry.",
 };
 
-export const ASSETS: Asset[] = [SPY_ASSET, QQQ_ASSET, BTC_ASSET, ETH_ASSET];
+export const ASSETS: Asset[] = [SPY_ASSET, NQ_ASSET, BTC_ASSET, ETH_ASSET];
 
 /** Even share of account equity. Four assets, so each one is designated 25%. */
 export function assetShareCents(equityCents: number) {
@@ -136,13 +137,13 @@ const STOCK_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
   "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
-  "SPY, QQQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
+  "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
-  "Two losses in a row locks out new entries for that ETF for the session.",
-  "One entry a day for each ETF. Two open positions and 4% combined open risk across the shared book.",
+  "Two losses in a row locks out new entries for that symbol for the session.",
+  "One entry a day for each symbol. Two open positions and 4% combined open risk across the shared book.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
-  "Uriel trades SPY and QQQ. Fonzo trades BTC and ETH. Anything else is untouchable.",
-  "The position is sold at the cash close. The stop is a disaster exit, not a profit target.",
+  "Uriel trades SPY and NQ. Fonzo trades BTC and ETH. Anything else is untouchable.",
+  "SPY is sold at the cash close. NQ is out at the target, the stop, or the cash close.",
   "The working book is under $25,000, so stock day trades stop at 3 in 5 business days.",
 ];
 
@@ -150,12 +151,12 @@ const CRYPTO_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
   "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
-  "SPY, QQQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
+  "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that coin for the UTC day.",
   "One entry a day for each coin. Two open positions and 4% combined open risk across the shared book.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
-  "Fonzo trades BTC and ETH. Uriel trades SPY and QQQ. Anything else is untouchable.",
+  "Fonzo trades BTC and ETH. Uriel trades SPY and NQ. Anything else is untouchable.",
   "The position is sold at 24:00 UTC. The stop is a disaster exit, not a profit target.",
   "Crypto orders are not stock day trades, so they do not add to the pattern day trader count.",
 ];

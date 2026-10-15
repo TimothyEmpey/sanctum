@@ -41,7 +41,7 @@ export type MomentumContext = {
 };
 
 export type MomentumAsset = {
-  symbol: "SPY" | "QQQ";
+  symbol: "SPY";
   strategy: string;
   setup: string;
 };
@@ -53,7 +53,7 @@ const SPY_ASSET: MomentumAsset = {
 };
 
 export type MomentumProposal = {
-  symbol: "SPY" | "QQQ";
+  symbol: "SPY";
   side: Side;
   entryPrice: number;
   stopPrice: number;

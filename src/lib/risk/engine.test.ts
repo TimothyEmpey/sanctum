@@ -57,12 +57,12 @@ describe("position sizing", () => {
 
   it("counts only this asset's open cost and working entry", () => {
     const used = deployedNotionalCents(
-      [{ symbol: "QQQ", quantity: 1, entryPrice: 100 }],
+      [{ symbol: "NQ", quantity: 1, entryPrice: 100 }],
       [
-        { symbol: "QQQ", quantity: 1, limitPrice: 100 },
+        { symbol: "NQ", quantity: 1, limitPrice: 100 },
         { symbol: "SPY", quantity: 1, limitPrice: 500 },
       ],
-      "QQQ",
+      "NQ",
     );
     expect(used).toBe(20_000);
   });
@@ -169,12 +169,13 @@ describe("risk engine", () => {
     expect(decision.reasons.join(" ")).toMatch(/Pattern day trader/);
   });
 
-  it("allows QQQ only for the stock worker", () => {
-    expect(evaluateRisk(proposal({ symbol: "QQQ" }), state()).approved).toBe(false);
+  it("allows NQ only for the stock worker", () => {
+    const morning = etInstant("2026-10-02", 10, 2);
+    expect(evaluateRisk(proposal({ symbol: "NQ", setup: "NQ_SWEEP", now: morning }), state()).approved).toBe(false);
     const decision = evaluateRisk(
-      proposal({ symbol: "QQQ" }),
+      proposal({ symbol: "NQ", setup: "NQ_SWEEP", now: morning }),
       state({
-        allowedSymbols: ["SPY", "QQQ"],
+        allowedSymbols: ["SPY", "NQ"],
         equityCents: 100_000_000,
         cashCents: 100_000_000,
         peakEquityCents: 100_000_000,
@@ -236,7 +237,7 @@ describe("risk engine", () => {
       peakEquityCents: 100_000,
       dayStartEquityCents: 100_000,
       weekStartEquityCents: 100_000,
-      allowedSymbols: ["SPY", "QQQ"],
+      allowedSymbols: ["SPY", "NQ"],
     };
     const spy = evaluateRisk(
       proposal({ entryPrice: 778, stopPrice: 762.44, targetPrice: 816.9, requestedShares: 1 }),
@@ -246,7 +247,9 @@ describe("risk engine", () => {
     expect(spy.reasons.join(" ")).toMatch(/25%/);
     const used = evaluateRisk(
       proposal({
-        symbol: "QQQ",
+        symbol: "NQ",
+        setup: "NQ_SWEEP",
+        now: etInstant("2026-10-02", 10, 2),
         entryPrice: 40,
         stopPrice: 39,
         targetPrice: 42,
@@ -258,6 +261,72 @@ describe("risk engine", () => {
     expect(used.shares).toBe(1);
     expect(used.computed.notionalCents).toBeLessThanOrEqual(5_000);
     expect(used.reasons.join(" ")).toMatch(/25%/);
+  });
+
+  it("keeps the Nasdaq buy on its morning window", () => {
+    const book = {
+      equityCents: 100_000,
+      cashCents: 100_000,
+      peakEquityCents: 100_000,
+      dayStartEquityCents: 100_000,
+      weekStartEquityCents: 100_000,
+      allowedSymbols: ["SPY", "NQ"],
+    };
+    const morning = etInstant("2026-10-02", 10, 2);
+    const nq = evaluateRisk(
+      proposal({
+        symbol: "NQ",
+        setup: "NQ_SWEEP",
+        now: morning,
+        entryPrice: 40,
+        stopPrice: 39,
+        targetPrice: 42,
+        requestedShares: 1,
+      }),
+      state(book),
+    );
+    expect(nq.reasons.join(" ")).not.toMatch(/New positions are closed/);
+    const spy = evaluateRisk(proposal({ now: morning }), state({ allowedSymbols: ["SPY", "NQ"] }));
+    expect(spy.approved).toBe(false);
+    expect(spy.reasons.join(" ")).toMatch(/New positions are closed/);
+    const late = evaluateRisk(
+      proposal({
+        symbol: "NQ",
+        setup: "NQ_SWEEP",
+        now: etInstant("2026-10-02", 15, 30),
+        entryPrice: 40,
+        stopPrice: 39,
+        targetPrice: 42,
+        requestedShares: 1,
+      }),
+      state(book),
+    );
+    expect(late.approved).toBe(false);
+    expect(late.reasons.join(" ")).toMatch(/New positions are closed/);
+  });
+
+  it("refuses one Nasdaq contract when the 25% share cannot pay for it", () => {
+    const decision = evaluateRisk(
+      proposal({
+        symbol: "NQ",
+        setup: "NQ_SWEEP",
+        now: etInstant("2026-10-02", 10, 2),
+        entryPrice: 30_028,
+        stopPrice: 30_018,
+        targetPrice: 30_100,
+        requestedShares: 1,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.reasons.join(" ")).toMatch(/25%/);
   });
 
   it("refuses entries outside the window", () => {

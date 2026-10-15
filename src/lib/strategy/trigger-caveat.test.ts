@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { etInstant } from "@/lib/market/time";
-import { blockingReason, describeAssetTrigger } from "@/lib/strategy/trigger-caveat";
+import { blockingReason, describeAssetTrigger, describeNqTrigger } from "@/lib/strategy/trigger-caveat";
 import type { Bar } from "@/lib/strategy/intraday-momentum";
 
 function bar(ts: number, close: number, open = close): Bar {
@@ -136,5 +136,19 @@ describe("trigger caveat", () => {
       ]),
     ).toBe("Pattern day trader limit reached.");
     expect(blockingReason(["Position size reduced to the cash on hand."])).toBeNull();
+  });
+});
+
+describe("Nasdaq trigger caveat", () => {
+  it("keeps a waiting, flat, or missing morning distinct from a flagged buy", () => {
+    expect(describeNqTrigger("waiting", null)).toBe("Playbook trigger is not in yet.");
+    expect(describeNqTrigger("flat", null)).toBe("Playbook trigger was not hit.");
+    expect(describeNqTrigger("missing", null)).toBe("Signal prices are missing. This is not a flat day.");
+    expect(describeNqTrigger("ready", null)).toBeNull();
+    expect(describeNqTrigger("ready", "NQ is designated 25% of account equity, and that share cannot fund the minimum size.")).toBe(
+      "Buy is flagged. No order: NQ is designated 25% of account equity, and that share cannot fund the minimum size.",
+    );
+    expect(describeNqTrigger("passed", null)).toBe("Buy was flagged. No order was sent.");
+    expect(describeNqTrigger("passed", "Uriel is paused.")).toBe("Buy is flagged. No order: Uriel is paused.");
   });
 });

@@ -14,7 +14,7 @@ async function loop() {
       const result = await tick(new Date());
       if (result.ok) {
         console.log(
-          `${result.beat.label} · SPY ${result.beat.spy?.toFixed(2) ?? "—"} · QQQ ${result.beat.qqq?.toFixed(2) ?? "—"} · ${result.beat.phase}`,
+          `${result.beat.label} · SPY ${result.beat.spy?.toFixed(2) ?? "—"} · NQ ${result.beat.nq?.toFixed(2) ?? "—"} · ${result.beat.phase}`,
         );
       } else {
         console.log(result.reason);

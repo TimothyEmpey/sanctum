@@ -3,7 +3,8 @@ import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { sessionClock } from "@/lib/market/calendar";
 import { etInstant, etParts } from "@/lib/market/time";
 import type { Bar } from "@/lib/strategy/intraday-momentum";
-import { blockingReason, describeAssetTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
+import { evaluateNqSweep } from "@/lib/strategy/nq-sweep";
+import { blockingReason, describeAssetTrigger, describeNqTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
 import { prisma } from "@/server/db";
 
 function proposalSymbol(proposal: unknown) {
@@ -12,12 +13,17 @@ function proposalSymbol(proposal: unknown) {
   return typeof symbol === "string" ? normalizeSymbol(symbol) : null;
 }
 
-function priorClose(daily: { ts: number; close: number }[], dateKey: string) {
-  let best: { ts: number; close: number } | null = null;
+function priorDay(daily: { ts: number; close: number; high?: number; low?: number }[], dateKey: string) {
+  let best: { ts: number; close: number; high?: number; low?: number } | null = null;
   for (const bar of daily) {
     if (etParts(new Date(bar.ts)).dateKey >= dateKey) continue;
     if (!best || bar.ts > best.ts) best = bar;
   }
+  return best;
+}
+
+function priorClose(daily: { ts: number; close: number; high?: number; low?: number }[], dateKey: string) {
+  const best = priorDay(daily, dateKey);
   return best && best.close > 0 ? best.close : null;
 }
 
@@ -42,6 +48,27 @@ export function sessionRiskReasons(
  * The charts keep the latest 500 minutes. Crypto's signal is 00:00–00:29 UTC,
  * which is outside that window later in the day, so the caveat reads these bars itself.
  */
+/** Regular-hours minutes for one ET session. The Nasdaq caveat needs the whole morning, not the 10:00 print. */
+export async function loadDayMinutes(accountId: string, symbol: string, dateKey: string): Promise<Bar[]> {
+  const rows = await prisma.marketBar.findMany({
+    where: {
+      accountId,
+      symbol,
+      timeframe: "1m",
+      ts: { gte: etInstant(dateKey, 9, 30), lte: etInstant(dateKey, 16, 15) },
+    },
+    orderBy: { ts: "asc" },
+  });
+  return rows.map((bar) => ({
+    ts: bar.ts.getTime(),
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
+}
+
 export async function loadSignalMinutes(accountId: string, asset: Asset, now: Date): Promise<Bar[]> {
   const stock = sessionClock(now);
   const crypto = cryptoSessionClock(now);
@@ -70,7 +97,8 @@ export function assetTriggerCaveat(input: {
   asset: Asset;
   now: Date;
   minutes: Bar[];
-  daily: { ts: number; close: number }[];
+  daily: { ts: number; close: number; high?: number; low?: number }[];
+  esMinutes?: Bar[];
   traded: boolean;
   paused: boolean;
   haltReason: string | null;
@@ -82,6 +110,26 @@ export function assetTriggerCaveat(input: {
   const dateKey = input.asset.market === "crypto" ? crypto.dateKey : stock.dateKey;
   const quiet =
     input.asset.market === "crypto" ? crypto.phase === "signal" || crypto.phase === "wait" : stock.phase === "closed" || stock.phase === "idle";
+  const block =
+    input.haltReason ??
+    (input.paused ? (input.asset.desk === "fonzo" ? "Fonzo is paused." : "Uriel is paused.") : null) ??
+    (heartbeatFresh(input.heartbeatAt, quiet) ? null : "Worker is offline.") ??
+    blockingReason(sessionRiskReasons(input.riskDecisions, input.asset.symbol, dateKey, input.asset.market));
+  if (input.asset.symbol === "NQ") {
+    if (input.traded) return null;
+    if (!stock.tradingDay) return "Cash market is closed.";
+    const prior = priorDay(input.daily, dateKey);
+    const view = evaluateNqSweep({
+      now: input.now,
+      bars: input.minutes,
+      esBars: input.esMinutes ?? [],
+      priorHigh: prior?.high ?? null,
+      priorLow: prior?.low ?? null,
+      hasOpenPosition: false,
+      tradesTaken: 0,
+    });
+    return describeNqTrigger(view.state, block);
+  }
   return describeAssetTrigger({
     market: input.asset.market,
     now: input.now,

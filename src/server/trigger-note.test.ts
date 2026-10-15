@@ -7,10 +7,10 @@ describe("session risk reasons", () => {
   it("uses the newest decision for that asset and session", () => {
     const reasons = sessionRiskReasons(
       [
-        { approved: true, proposal: { symbol: "QQQ" }, reasons: [], createdAt: now },
-        { approved: false, proposal: { symbol: "QQQ" }, reasons: ["Daily loss limit reached."], createdAt: new Date("2026-10-14T19:30:00.000Z") },
+        { approved: true, proposal: { symbol: "NQ" }, reasons: [], createdAt: now },
+        { approved: false, proposal: { symbol: "NQ" }, reasons: ["Daily loss limit reached."], createdAt: new Date("2026-10-14T19:30:00.000Z") },
       ],
-      "QQQ",
+      "NQ",
       "2026-10-14",
       "nyse",
     );
@@ -26,7 +26,7 @@ describe("session risk reasons", () => {
     );
     expect(reasons).toEqual(["Uriel is paused."]);
     expect(
-      sessionRiskReasons([{ approved: false, proposal: {}, reasons: ["Uriel is paused."], createdAt: now }], "QQQ", "2026-10-14", "nyse"),
+      sessionRiskReasons([{ approved: false, proposal: {}, reasons: ["Uriel is paused."], createdAt: now }], "NQ", "2026-10-14", "nyse"),
     ).toBeNull();
   });
 });

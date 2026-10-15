@@ -18,7 +18,7 @@ export function BookBanner({ mode, demo, brokerEquityCents }: { mode: string; de
     const broker = brokerEquityCents == null ? "a larger Alpaca paper account" : `Alpaca paper at ${formatUsd(brokerEquityCents)}`;
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[color-mix(in_oklab,var(--primary)_10%,transparent)] px-4 py-3 text-sm">
-        The working book is $1,000 and is shared by Uriel and Fonzo. SPY, QQQ, BTC, and ETH are each designated 25% of that equity. Margin is not used. The broker is {broker}, and that account is not reset.
+        The working book is $1,000 and is shared by Uriel and Fonzo. SPY, NQ, BTC, and ETH are each designated 25% of that equity. Margin is not used. The broker is {broker}, and that account is not reset.
       </div>
     );
   }
@@ -91,7 +91,7 @@ export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; 
       {includeUntouchable ? (
         <Card>
           <CardTitle>Untouchable holdings</CardTitle>
-          <p className="mt-1 text-xs text-[var(--muted)]">Anything outside SPY, QQQ, BTC, and ETH is display-only. The workers cannot sell these.</p>
+          <p className="mt-1 text-xs text-[var(--muted)]">Anything outside SPY, NQ, BTC, and ETH is display-only. The workers cannot sell these.</p>
           <div className="mt-3 space-y-2">
             {locked.length === 0 ? <p className="text-sm text-[var(--muted)]">No outside holdings in this book.</p> : null}
             {locked.map((holding) => (

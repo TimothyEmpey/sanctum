@@ -2,7 +2,7 @@ import { assetBySymbol } from "@/lib/assets";
 
 export class UntouchableSymbolError extends Error {
   constructor(symbol: string) {
-    super(`${symbol} is untouchable. Orders are limited to SPY, QQQ, BTC, and ETH.`);
+    super(`${symbol} is untouchable. Orders are limited to SPY, NQ, BTC, and ETH.`);
     this.name = "UntouchableSymbolError";
   }
 }

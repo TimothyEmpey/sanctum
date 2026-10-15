@@ -2,6 +2,10 @@ import { BookBanner, FillTape, PositionBook } from "@/components/desk-widgets";
 import { Card, CardTitle } from "@/components/ui/card";
 import { getDesk } from "@/server/desk";
 
+function withoutRetiredSymbol(message: string) {
+  return message.replace(/\s*QQQ\s+[0-9,]+\.?[0-9]*\.?/g, "").replace(/[ ]{2,}/g, " ").trim();
+}
+
 export default async function LogsPage({
   searchParams,
 }: {
@@ -23,7 +27,7 @@ export default async function LogsPage({
         <div className="mt-3 space-y-3">
           {desk.events.map((event) => (
             <div key={event.id} className="text-sm">
-              <p>{event.message}</p>
+              <p>{withoutRetiredSymbol(event.message)}</p>
               <p className="text-xs text-[var(--muted)]">
                 {event.kind} · {new Date(event.createdAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
               </p>

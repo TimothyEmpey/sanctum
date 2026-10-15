@@ -74,7 +74,8 @@ export function paperBracketOrder(input: {
   targetPrice: number;
   clientOrderId: string;
 }) {
-  if (input.symbol !== "SPY" && input.symbol !== "QQQ") throw new UntouchableSymbolError(input.symbol);
+  const asset = assetBySymbol(input.symbol);
+  if (!asset || asset.assetClass !== "stocks") throw new UntouchableSymbolError(input.symbol);
   if (!Number.isInteger(input.quantity) || input.quantity < 1) {
     throw new Error("Alpaca paper stock orders must be a positive whole number of shares.");
   }

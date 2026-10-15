@@ -1,6 +1,7 @@
 import { assetShareCents } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock } from "@/lib/market/crypto-clock";
+import { NQ_SETUP, nqWatchOpen } from "@/lib/strategy/nq-sweep";
 import { PDT_EQUITY_CENTS, PDT_MAX_DAY_TRADES, RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
 import { dollarRiskCents, notionalCents, quantityForRisk, riskBudgetCents, sharesForRisk } from "@/lib/risk/sizing";
 import type { RiskDecision, RiskState, TradeProposal } from "@/lib/risk/types";
@@ -96,7 +97,12 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   }
   if (state.agentPaused) reasons.push(proposal.market === "crypto" ? "Fonzo is paused." : "Uriel is paused.");
   if (state.haltReason) reasons.push(`Trading halted: ${state.haltReason}`);
-  const windowOpen = proposal.market === "crypto" ? cryptoSessionClock(proposal.now).entryWindowOpen : clock.entryWindowOpen;
+  const windowOpen =
+    proposal.market === "crypto"
+      ? cryptoSessionClock(proposal.now).entryWindowOpen
+      : proposal.setup === NQ_SETUP
+        ? nqWatchOpen(proposal.now)
+        : clock.entryWindowOpen;
   const phaseLabel = proposal.market === "crypto" ? cryptoSessionClock(proposal.now).phase : clock.phase;
   if (!windowOpen) reasons.push(`New positions are closed during ${phaseLabel}.`);
   if (dayPnl <= -riskBudgetCents(state.dayStartEquityCents, RISK_LIMITS.maxDailyLoss)) {

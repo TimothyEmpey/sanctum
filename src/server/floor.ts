@@ -4,10 +4,10 @@ import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { alpacaPaperConfigured } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
-import { assetTriggerCaveat, loadSignalMinutes } from "@/server/trigger-note";
+import { assetTriggerCaveat, loadDayMinutes, loadSignalMinutes } from "@/server/trigger-note";
 
-/** Floor grid: SPY, BTC, then QQQ, ETH. The single-asset desk is unchanged. */
-const FLOOR_SYMBOLS = ["SPY", "BTC/USD", "QQQ", "ETH/USD"] as const;
+/** Floor grid: SPY, BTC, then NQ, ETH. The single-asset desk is unchanged. */
+const FLOOR_SYMBOLS = ["SPY", "BTC/USD", "NQ", "ETH/USD"] as const;
 
 function candle(bar: { ts: Date; open: number; high: number; low: number; close: number; volume: number }) {
   return {
@@ -76,11 +76,15 @@ export async function getFloor() {
   if (!account) return null;
   const stockBeat = readHeartbeat();
   const fonzoBeat = readFonzoHeartbeat();
+  const esMinutes = await loadDayMinutes(account.id, "ES", stockClock.dateKey);
 
   const panels = await Promise.all(
     FLOOR_SYMBOLS.map(async (symbol) => {
       const asset = ASSETS.find((item) => item.symbol === symbol) as Asset;
-      const [bars, minutes] = await Promise.all([barsFor(account.id, symbol), loadSignalMinutes(account.id, asset, now)]);
+      const [bars, minutes] = await Promise.all([
+        barsFor(account.id, symbol),
+        asset.symbol === "NQ" ? loadDayMinutes(account.id, "NQ", stockClock.dateKey) : loadSignalMinutes(account.id, asset, now),
+      ]);
       const mark = bars.mark;
       const dateKey = asset.market === "crypto" ? cryptoClock.dateKey : stockClock.dateKey;
       const session = account.sessions.find((row) => row.symbol === symbol && row.sessionDate === dateKey);
@@ -93,7 +97,8 @@ export async function getFloor() {
         asset,
         now,
         minutes,
-        daily: bars.daily.map((bar) => ({ ts: bar.t, close: bar.close })),
+        esMinutes: asset.symbol === "NQ" ? esMinutes : [],
+        daily: bars.daily.map((bar) => ({ ts: bar.t, close: bar.close, high: bar.high, low: bar.low })),
         traded,
         paused: asset.desk === "fonzo" ? account.fonzoPaused : account.agentPaused,
         haltReason: account.haltReason,
