@@ -35,7 +35,7 @@ export const SPY_ASSET: Asset = {
   wholeShares: false,
   quantityStep: 0.001,
   playbook:
-    "SPY follows the chart. An uptrend is higher highs and higher lows. Uriel buys after price trades under a 15-minute swing low and a later 15-minute candle closes above the high that was in place. If that turn is missed, a 15-minute uptrend can still be bought after a 5-minute close under its swing low and a 5-minute close back above its swing high, as long as that dip does not break the 15-minute low. The stop is the sweep or retrace low. The target is the next high above the entry, or one times the risk when no high is drawn. Shorts stay off. One entry a day, from the open until the cash flatten. The position is out at the target, the stop, or the cash close. Size can be a fraction of a share so the 25% share can fund it. The model does not choose the order.",
+    "SPY follows the chart. An uptrend is higher highs and higher lows. Uriel buys after price trades under a 15-minute swing low and a later 15-minute candle closes above the high that was in place. If that turn is missed, a 15-minute uptrend can still be bought after a 5-minute close under its swing low and a 5-minute close back above its swing high, as long as that dip does not break the 15-minute low. The stop is the sweep or retrace low. The target is the next high above the entry, or one times the risk when no high is drawn. Shorts stay off. Each fresh long can be taken once the prior position is closed, from the open until the cash flatten. The position is out at the target, the stop, or the cash close. Size can be a fraction of a share so the 25% share can fund it. The model does not choose the order.",
 };
 
 export const NQ_ASSET: Asset = {
@@ -97,6 +97,13 @@ export const STOCK_SYMBOLS = STOCK_ASSETS.map((asset) => asset.symbol);
 export const CRYPTO_SYMBOLS = CRYPTO_ASSETS.map((asset) => asset.symbol);
 export const TRADABLE_SYMBOLS = ASSETS.map((asset) => asset.symbol);
 
+/** Uriel's symbols share a desk. Fonzo's symbols share the other. A position on one does not count on the other. */
+export function sameDesk(symbol: string, other: string) {
+  const left = assetBySymbol(symbol);
+  const right = assetBySymbol(other);
+  return Boolean(left && right && left.desk === right.desk);
+}
+
 export function assetBySymbol(symbol: string) {
   const key = normalizeSymbol(symbol);
   return ASSETS.find((asset) => asset.symbol === key) ?? null;
@@ -138,13 +145,12 @@ const STOCK_RULES = [
   "A stop can move closer. It cannot move farther away.",
   "Size is floored from 2% of the $1,000 working book divided by the stop distance. SPY can be a fraction of a share. NQ stays a whole contract.",
   "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
-  "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
-  "Two losses in a row locks out new entries for that symbol for the session.",
-  "One entry a day for each symbol. Two open positions and 4% combined open risk across the shared book.",
+  "No averaging down and no martingale. NQ stays at or below the previous losing size. Each SPY long is sized from its own stop.",
+  "Two losses in a row locks NQ for the session. SPY does not use that lockout.",
+  "NQ gets one entry a day. SPY can take each new long after the prior position is closed. Uriel counts its own 2 open positions and 4% open risk. Fonzo's positions are not included.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
   "Uriel trades SPY and NQ. Fonzo trades BTC and ETH. Anything else is untouchable.",
   "SPY and NQ are out at the target, the stop, or the cash close.",
-  "The working book is under $25,000, so stock day trades stop at 3 in 5 business days.",
 ];
 
 const CRYPTO_RULES = [
@@ -154,11 +160,10 @@ const CRYPTO_RULES = [
   "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that coin for the UTC day.",
-  "One entry a day for each coin. Two open positions and 4% combined open risk across the shared book.",
+  "One entry a day for each coin. Fonzo counts its own 2 open positions and 4% open risk. Uriel's positions are not included.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
   "Fonzo trades BTC and ETH. Uriel trades SPY and NQ. Anything else is untouchable.",
   "The position is sold at 24:00 UTC. The stop is a disaster exit, not a profit target.",
-  "Crypto orders are not stock day trades, so they do not add to the pattern day trader count.",
 ];
 
 export function rulesFor(asset: Asset) {

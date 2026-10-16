@@ -33,7 +33,6 @@ export type RiskState = {
   haltReason: string | null;
   spyPositionOpen: boolean;
   shortingEnabled: boolean;
-  dayTradesInPdtWindow: number;
   /** Defaults to SPY when omitted, so a stray proposal cannot reach another symbol. */
   allowedSymbols?: string[];
 };

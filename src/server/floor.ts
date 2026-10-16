@@ -95,7 +95,7 @@ export async function getFloor() {
       const traded =
         account.trades.some((trade) => trade.symbol === symbol) ||
         account.orders.some((order) => order.symbol === symbol) ||
-        (session?.tradesTaken ?? 0) > 0;
+        (symbol !== "SPY" && (session?.tradesTaken ?? 0) > 0);
       const heartbeat = asset.desk === "fonzo" ? fonzoBeat : stockBeat;
       const caveat = assetTriggerCaveat({
         asset,

@@ -235,9 +235,7 @@ export function evaluateSpyStructure(input: {
   const clock = sessionClock(input.now);
   if (!clock.tradingDay) return done("flat", "Cash market is closed.", "Cash market is closed.");
   if (clock.minutes < OPEN) return done("waiting", "Playbook trigger is not in yet.");
-  if (input.hasOpenPosition || input.tradesTaken >= (input.maxTrades ?? 1)) {
-    return done("flat", "SPY already has its entry for this session.");
-  }
+  if (input.hasOpenPosition) return done("flat", "SPY already has an open position.");
 
   const end = sessionEnd(clock.earlyClose);
   const today = input.bars.filter((bar) => etParts(new Date(bar.ts)).dateKey === clock.dateKey && etParts(new Date(bar.ts)).minutes >= OPEN);

@@ -1,4 +1,4 @@
-import { assetLabel, assetShareCents, normalizeSymbol, resolveView, rulesFor, type Asset } from "@/lib/assets";
+import { assetLabel, assetShareCents, normalizeSymbol, resolveView, rulesFor, sameDesk, type Asset } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
 import { RISK_LIMITS } from "@/lib/risk/constants";
@@ -79,7 +79,8 @@ export async function getDesk(query?: DeskQuery) {
   const dayPnlCents = account.equityCents - account.dayStartEquityCents;
   const weekPnlCents = account.equityCents - account.weekStartEquityCents;
   const engineOpen = account.trades.filter((trade) => trade.status === "OPEN" && trade.origin === "ENGINE");
-  const openRiskCents = engineOpen.reduce(
+  const deskOpen = engineOpen.filter((trade) => sameDesk(asset.symbol, trade.symbol));
+  const openRiskCents = deskOpen.reduce(
     (sum, trade) => sum + Math.round(Math.abs(trade.entryPrice - trade.stopPrice) * trade.quantity * 100),
     0,
   );
@@ -89,7 +90,7 @@ export async function getDesk(query?: DeskQuery) {
   const traded =
     engineOpen.some((trade) => trade.symbol === asset.symbol) ||
     assetOrders.some((order) => order.status === "WORKING" && order.purpose === "ENTRY") ||
-    (session?.tradesTaken ?? 0) > 0;
+    (asset.symbol !== "SPY" && (session?.tradesTaken ?? 0) > 0);
   const triggerCaveat = assetTriggerCaveat({
     asset,
     now,
@@ -155,7 +156,7 @@ export async function getDesk(query?: DeskQuery) {
     drawdown: account.peakEquityCents > 0 ? (account.peakEquityCents - account.equityCents) / account.peakEquityCents : 0,
     openRiskCents,
     openRiskLimitCents: riskBudgetCents(account.equityCents, RISK_LIMITS.maxTotalOpenRisk),
-    accountOpenPositions: engineOpen.length,
+    accountOpenPositions: deskOpen.length,
     tradesToday: session?.tradesTaken ?? 0,
     heartbeat,
     triggerCaveat,

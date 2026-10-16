@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { Account, Prisma, StrategySession, Trade } from "@prisma/client";
-import { ASSETS, assetBySymbol, assetShareCents, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
+import { ASSETS, assetBySymbol, assetShareCents, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, sameDesk, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
 import { previousBusinessDays, retiredFlattenMinute, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
-import { etInstant, etParts, formatQty, roundPrice } from "@/lib/market/time";
+import { etParts, formatQty, roundPrice } from "@/lib/market/time";
 import { accountEquityCents } from "@/lib/portfolio/equity";
 import { RISK_LIMITS, STRATEGY_ID } from "@/lib/risk/constants";
 import { evaluateRisk, haltReasonForState } from "@/lib/risk/engine";
@@ -266,33 +266,10 @@ async function loadBook(accountId: string) {
   };
 }
 
-async function dayTradeCount(accountId: string, dateKey: string) {
-  const window = new Set([dateKey, ...previousBusinessDays(dateKey, 4)]);
-  const start = etInstant(dateKey, 0, 0);
-  const trades = await prisma.trade.findMany({
-    where: { accountId, origin: "ENGINE", closedAt: { not: null }, symbol: { in: [...STOCK_SYMBOLS] } },
-    select: { openedAt: true, closedAt: true },
-  });
-  const closed = trades.filter((trade) => {
-    if (!trade.closedAt) return false;
-    const opened = etParts(trade.openedAt).dateKey;
-    const closedOn = etParts(trade.closedAt).dateKey;
-    return opened === closedOn && window.has(opened);
-  }).length;
-  const openToday = await prisma.trade.count({
-    where: { accountId, origin: "ENGINE", status: "OPEN", symbol: { in: [...STOCK_SYMBOLS] }, openedAt: { gte: start } },
-  });
-  const workingToday = await prisma.order.count({
-    where: { accountId, status: "WORKING", purpose: "ENTRY", symbol: { in: [...STOCK_SYMBOLS] }, createdAt: { gte: start } },
-  });
-  return closed + openToday + workingToday;
-}
-
 async function riskState(
   account: Account,
   session: StrategySession,
   equityCents: number,
-  clock: SessionClock,
   symbol: string,
   allowedSymbols: string[],
 ): Promise<RiskState> {
@@ -303,9 +280,11 @@ async function riskState(
     where: { accountId: account.id, status: "WORKING", purpose: "ENTRY" },
   });
   const symbolWorking = workingEntries.filter((order) => order.symbol === symbol);
+  const deskTrades = open.filter((trade) => sameDesk(symbol, trade.symbol));
+  const deskOrders = workingEntries.filter((order) => sameDesk(symbol, order.symbol));
   const openRiskCents =
-    open.reduce((sum, trade) => sum + dollarRiskCents(trade.quantity, trade.entryPrice, trade.stopPrice), 0) +
-    workingEntries.reduce((sum, order) => {
+    deskTrades.reduce((sum, trade) => sum + dollarRiskCents(trade.quantity, trade.entryPrice, trade.stopPrice), 0) +
+    deskOrders.reduce((sum, order) => {
       if (order.limitPrice == null || order.stopPrice == null) return sum;
       return sum + dollarRiskCents(order.quantity, order.limitPrice, order.stopPrice);
     }, 0);
@@ -315,7 +294,7 @@ async function riskState(
     peakEquityCents: Math.max(account.peakEquityCents, equityCents),
     dayStartEquityCents: account.dayStartEquityCents,
     weekStartEquityCents: account.weekStartEquityCents,
-    openPositions: open.length + workingEntries.length,
+    openPositions: deskTrades.length + deskOrders.length,
     openRiskCents,
     tradesToday: session.tradesTaken,
     consecutiveLosses: session.consecutiveLosses,
@@ -325,7 +304,6 @@ async function riskState(
     haltReason: account.haltReason,
     spyPositionOpen: open.some((trade) => trade.symbol === symbol) || symbolWorking.length > 0,
     shortingEnabled: account.shortingEnabled,
-    dayTradesInPdtWindow: await dayTradeCount(account.id, clock.dateKey),
     allowedSymbols,
     sleeveUsedCents: deployedNotionalCents(open, workingEntries, symbol),
   };
@@ -633,7 +611,6 @@ async function executeProposal(
   account: Account,
   session: StrategySession,
   equityCents: number,
-  clock: SessionClock,
   proposal: EntryProposal,
   mark: number,
   now: Date,
@@ -658,7 +635,7 @@ async function executeProposal(
       market: asset.market,
       quantityStep: asset.quantityStep,
     },
-    await riskState(account, session, equityCents, clock, proposal.symbol, allowedSymbols),
+    await riskState(account, session, equityCents, proposal.symbol, allowedSymbols),
   );
   await prisma.riskDecisionRecord.create({
     data: {
@@ -1166,7 +1143,7 @@ async function considerStock(
   if (!view.proposal || ("state" in view && view.state !== "ready")) return;
   const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
   const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
-  await executeProposal(freshAccount, freshSession, equityCents, clock, view.proposal, mark, now, [...STOCK_SYMBOLS]);
+  await executeProposal(freshAccount, freshSession, equityCents, view.proposal, mark, now, [...STOCK_SYMBOLS]);
 }
 
 async function considerCrypto(account: Account, asset: Asset, equityCents: number, now: Date, mark: number) {
@@ -1199,7 +1176,7 @@ async function considerCrypto(account: Account, asset: Asset, equityCents: numbe
   const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
   const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
   const paused = { ...freshAccount, agentPaused: freshAccount.fonzoPaused };
-  await executeProposal(paused, freshSession, equityCents, sessionClock(now), view.proposal, mark, now, [...CRYPTO_SYMBOLS]);
+  await executeProposal(paused, freshSession, equityCents, view.proposal, mark, now, [...CRYPTO_SYMBOLS]);
 }
 
 async function saveSleeve(accountId: string, equityCents: number, peakEquityCents: number, haltReason: string | null, extra?: object) {

@@ -4,6 +4,7 @@ import { fiveMinuteCandles, isStrategyBar } from "@/lib/market/bars";
 import { etInstant } from "@/lib/market/time";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { aggregateEquity } from "@/lib/portfolio/equity";
+import { sameDesk } from "@/lib/assets";
 import { evaluateRisk } from "@/lib/risk/engine";
 import { deployedNotionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
@@ -29,7 +30,6 @@ function state(overrides: Partial<RiskState> = {}): RiskState {
     haltReason: null,
     spyPositionOpen: false,
     shortingEnabled: false,
-    dayTradesInPdtWindow: 0,
     ...overrides,
   };
 }
@@ -160,13 +160,40 @@ describe("risk engine", () => {
     expect(evaluateRisk(short, state({ shortingEnabled: true })).approved).toBe(true);
   });
 
-  it("enforces the pattern day trader count under $25,000", () => {
+  it("does not apply a $25,000 day-trade cap to a later SPY structure", () => {
     const decision = evaluateRisk(
-      proposal({ requestedShares: 20, entryPrice: 100, stopPrice: 98, targetPrice: 103 }),
-      state({ equityCents: 2_000_000, cashCents: 2_000_000, dayTradesInPdtWindow: 3 }),
+      proposal({
+        setup: "SPY_STRUCTURE",
+        now: etInstant("2026-10-02", 11, 0),
+        entryPrice: 100,
+        stopPrice: 98,
+        targetPrice: 103,
+        requestedShares: 0.2,
+        quantityStep: 0.001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        tradesToday: 4,
+        consecutiveLosses: 2,
+        lastTradeWasLoss: true,
+        lastTradeShares: 0.01,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
     );
-    expect(decision.approved).toBe(false);
-    expect(decision.reasons.join(" ")).toMatch(/Pattern day trader/);
+    expect(decision.approved).toBe(true);
+    expect(decision.shares).toBe(0.2);
+    expect(decision.reasons.join(" ")).not.toMatch(/Pattern day trader|day-trade|trades for the day|lockout/);
+  });
+
+  it("counts Uriel and Fonzo as separate desks", () => {
+    expect(sameDesk("SPY", "NQ")).toBe(true);
+    expect(sameDesk("BTC/USD", "ETH/USD")).toBe(true);
+    expect(sameDesk("SPY", "BTC/USD")).toBe(false);
+    expect(sameDesk("NQ", "ETH/USD")).toBe(false);
   });
 
   it("allows NQ only for the stock worker", () => {
@@ -206,7 +233,6 @@ describe("risk engine", () => {
         peakEquityCents: 100_000,
         dayStartEquityCents: 100_000,
         weekStartEquityCents: 100_000,
-        dayTradesInPdtWindow: 3,
         allowedSymbols: ["BTC/USD", "ETH/USD"],
       }),
     );

@@ -3,7 +3,7 @@ import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { NQ_SETUP, nqWatchOpen } from "@/lib/strategy/nq-sweep";
 import { SPY_SETUP, spyWatchOpen } from "@/lib/strategy/spy-structure";
-import { PDT_EQUITY_CENTS, PDT_MAX_DAY_TRADES, RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
+import { RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
 import { dollarRiskCents, notionalCents, quantityForRisk, riskBudgetCents, sharesForRisk } from "@/lib/risk/sizing";
 import type { RiskDecision, RiskState, TradeProposal } from "@/lib/risk/types";
 
@@ -72,7 +72,9 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   }
   let heldToLastLoss = false;
   const minQty = wholeShares ? 1 : step;
+  const repeatStructure = proposal.setup === SPY_SETUP;
   if (
+    !repeatStructure &&
     state.lastTradeWasLoss &&
     state.lastTradeShares != null &&
     state.lastTradeShares + 1e-9 >= minQty &&
@@ -88,12 +90,12 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
     reasons.push(`No averaging down, and no second ${proposal.symbol} position while one is open.`);
   }
   if (state.openPositions >= RISK_LIMITS.maxOpenPositions) {
-    reasons.push("Maximum open positions reached.");
+    reasons.push("Maximum open positions for this desk reached.");
   }
-  if (state.tradesToday >= RISK_LIMITS.maxTradesPerDay) {
+  if (!repeatStructure && state.tradesToday >= RISK_LIMITS.maxTradesPerDay) {
     reasons.push("Maximum trades for the day reached.");
   }
-  if (state.consecutiveLosses >= 2) {
+  if (!repeatStructure && state.consecutiveLosses >= 2) {
     reasons.push("Revenge-trading lockout after two consecutive losses.");
   }
   if (state.agentPaused) reasons.push(proposal.market === "crypto" ? "Fonzo is paused." : "Uriel is paused.");
@@ -116,9 +118,6 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   }
   if (drawdown >= RISK_LIMITS.maxDrawdownFromPeak - 1e-12) {
     reasons.push("Drawdown from peak equity reached 5.0%.");
-  }
-  if (proposal.market !== "crypto" && state.equityCents < PDT_EQUITY_CENTS && state.dayTradesInPdtWindow >= PDT_MAX_DAY_TRADES) {
-    reasons.push("Pattern day trader limit: 3 day trades in 5 business days under $25,000.");
   }
 
   const hardReject = reasons.length > 0;

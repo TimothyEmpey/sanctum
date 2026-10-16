@@ -19,7 +19,7 @@ export default async function RiskPage({
     ["Peak drawdown", `${desk.limits.maxDrawdownFromPeak * 100}%`],
     ["Open positions", String(desk.limits.maxOpenPositions)],
     ["Open risk", `${desk.limits.maxTotalOpenRisk * 100}%`],
-    ["Trades / day", String(desk.limits.maxTradesPerDay)],
+    ["Trades / day", desk.symbol === "SPY" ? "Each new structure" : String(desk.limits.maxTradesPerDay)],
   ];
 
   return (
@@ -28,7 +28,7 @@ export default async function RiskPage({
         <p className="text-xs uppercase tracking-[0.22em] text-[var(--muted)]">Guardrails</p>
         <h1 className="mt-1 text-3xl font-semibold tracking-tight">Risk</h1>
         <p className="mt-1 max-w-2xl text-sm text-[var(--muted)]">
-          {desk.workerName} proposes. The risk engine sizes and can refuse. Nothing reaches the broker without a stop and a symbol check. Loss limits use the shared $1,000 book. Each asset is designated 25% of that equity.
+          {desk.workerName} proposes. The risk engine sizes and can refuse. Nothing reaches the broker without a stop and a symbol check. Loss limits use the shared $1,000 book. Open positions and open risk are counted on this desk only. Each asset is designated 25% of that equity.
         </p>
       </div>
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">

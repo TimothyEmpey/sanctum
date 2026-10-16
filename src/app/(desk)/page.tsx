@@ -37,7 +37,15 @@ export default async function DashboardPage({
           value={formatUsd(desk.buyingPowerCents)}
           hint={`${desk.assetLabel} is designated ${formatUsd(desk.shareCents)}, 25% of account equity. Cash only. Margin is not used.`}
         />
-        <Metric label="Open positions" value={String(desk.accountOpenPositions)} hint={`${desk.tradesToday} of ${desk.limits.maxTradesPerDay} ${desk.symbol} entries today. The $1,000 book is shared.`} />
+        <Metric
+          label="Open positions"
+          value={String(desk.accountOpenPositions)}
+          hint={
+            desk.symbol === "SPY"
+              ? `${desk.tradesToday} SPY entries today. Another long can be taken after this position is closed. Fonzo's positions are not counted.`
+              : `${desk.tradesToday} of ${desk.limits.maxTradesPerDay} ${desk.symbol} entries today. The other desk's positions are not counted.`
+          }
+        />
         <Metric label="Active orders" value={String(desk.orders.filter((order) => order.status === "WORKING").length)} />
         <Metric label="Week P&L" value={formatUsd(desk.weekPnlCents, true)} tone={moneyTone(desk.weekPnlCents)} />
       </section>

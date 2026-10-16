@@ -109,6 +109,20 @@ describe("SPY price action", () => {
     expect(closed.standDown).toMatch(/does not short/);
   });
 
+  it("takes another long after an earlier fill is closed", () => {
+    const again = evaluateSpyStructure({ ...levels, tradesTaken: 2, now: etInstant(DATE, 10, 46), bars: reversal() });
+    expect(again.state).toBe("ready");
+    expect(again.proposal?.entryPrice).toBe(111);
+    const open = evaluateSpyStructure({
+      ...levels,
+      hasOpenPosition: true,
+      tradesTaken: 1,
+      now: etInstant(DATE, 10, 46),
+      bars: reversal(),
+    });
+    expect(open.proposal).toBeNull();
+  });
+
   it("says the bars are missing instead of calling the day flat", () => {
     const view = evaluateSpyStructure({ ...levels, now: etInstant(DATE, 11, 0), bars: [] });
     expect(view.state).toBe("missing");
