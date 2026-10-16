@@ -406,6 +406,59 @@ describe("risk engine", () => {
     expect(decision.reasons.join(" ")).toMatch(/25%/);
   });
 
+  it("buys a fraction of Nasdaq inside the 25% share", () => {
+    const decision = evaluateRisk(
+      proposal({
+        symbol: "NQ",
+        setup: "NQ_SWEEP",
+        now: etInstant("2026-10-02", 10, 2),
+        entryPrice: 30_028,
+        stopPrice: 30_018,
+        targetPrice: 30_100,
+        requestedShares: 1,
+        quantityStep: 0.000001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
+    );
+    expect(decision.approved).toBe(true);
+    expect(decision.shares).toBeGreaterThan(0);
+    expect(decision.shares).toBeLessThan(1);
+    expect(decision.computed.notionalCents).toBeGreaterThanOrEqual(100);
+    expect(decision.computed.notionalCents).toBeLessThanOrEqual(25_000);
+    expect(decision.reasons.join(" ")).toMatch(/25%/);
+  });
+
+  it("refuses a stock fraction worth less than $1", () => {
+    const decision = evaluateRisk(
+      proposal({
+        setup: "SPY_STRUCTURE",
+        now: etInstant("2026-10-02", 11, 0),
+        entryPrice: 100,
+        stopPrice: 99,
+        targetPrice: 102,
+        requestedShares: 0.001,
+        quantityStep: 0.000001,
+      }),
+      state({
+        equityCents: 100_000,
+        cashCents: 100_000,
+        peakEquityCents: 100_000,
+        dayStartEquityCents: 100_000,
+        weekStartEquityCents: 100_000,
+        allowedSymbols: ["SPY", "NQ"],
+      }),
+    );
+    expect(decision.approved).toBe(false);
+    expect(decision.reasons.join(" ")).toMatch(/\$1/);
+  });
+
   it("refuses entries outside the window", () => {
     const decision = evaluateRisk(proposal({ now: etInstant("2026-10-03", 11, 0) }), state());
     expect(decision.approved).toBe(false);
@@ -432,7 +485,8 @@ describe("firewall", () => {
     expect(() =>
       assertAgentExit({ symbol: "SPY", quantity: 8, agentQuantity: 8, baselineQuantity: 10 }),
     ).not.toThrow();
-    expect(() => assertAgentExit({ symbol: "NQ", quantity: 1.5, agentQuantity: 2, baselineQuantity: 0 })).toThrow(/whole number/);
+    expect(() => assertAgentExit({ symbol: "NQ", quantity: 0.008, agentQuantity: 0.008, baselineQuantity: 0 })).not.toThrow();
+    expect(() => assertAgentExit({ symbol: "NQ", quantity: 0.02, agentQuantity: 0.008, baselineQuantity: 0 })).toThrow(/baseline/);
     expect(() => assertAgentExit({ symbol: "SPY", quantity: 0.25, agentQuantity: 0.25, baselineQuantity: 0 })).not.toThrow();
     expect(() => assertAgentExit({ symbol: "BTC/USD", quantity: 0.01, agentQuantity: 0.01, baselineQuantity: 0 })).not.toThrow();
   });

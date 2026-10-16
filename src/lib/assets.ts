@@ -5,6 +5,10 @@ import { SPY_SETUP, SPY_STRATEGY_ID, SPY_STRATEGY_NAME } from "@/lib/strategy/sp
 /** Sizing book. The Alpaca paper account is larger and is not reset. */
 export const WORKING_BOOK_CENTS = 100_000;
 
+/** Robinhood fractional shares: millionths of a share, and a buy of at least $1. */
+export const FRACTIONAL_SHARE_STEP = 0.000001;
+export const MIN_FRACTIONAL_NOTIONAL_CENTS = 100;
+
 export type DeskName = "uriel" | "fonzo" | "sanctum";
 export type AssetClass = "stocks" | "crypto";
 export type AssetMarket = "nyse" | "crypto";
@@ -33,9 +37,9 @@ export const SPY_ASSET: Asset = {
   strategyName: SPY_STRATEGY_NAME,
   setup: SPY_SETUP,
   wholeShares: false,
-  quantityStep: 0.001,
+  quantityStep: FRACTIONAL_SHARE_STEP,
   playbook:
-    "SPY follows the chart. An uptrend is higher highs and higher lows. Uriel buys after price trades under a 15-minute swing low and a later 15-minute candle closes above the high that was in place. If that turn is missed, a 15-minute uptrend can still be bought after a 5-minute close under its swing low and a 5-minute close back above its swing high, as long as that dip does not break the 15-minute low. The stop is the sweep or retrace low. The target is the next high above the entry, or one times the risk when no high is drawn. Shorts stay off. Each fresh long can be taken once the prior position is closed, from the open until the cash flatten. The position is out at the target, the stop, or the cash close. Size can be a fraction of a share so the 25% share can fund it. The model does not choose the order.",
+    "SPY follows the chart. An uptrend is higher highs and higher lows. Uriel buys after price trades under a 15-minute swing low and a later 15-minute candle closes above the high that was in place. If that turn is missed, a 15-minute uptrend can still be bought after a 5-minute close under its swing low and a 5-minute close back above its swing high, as long as that dip does not break the 15-minute low. The stop is the sweep or retrace low. The target is the next high above the entry, or one times the risk when no high is drawn. Shorts stay off. Each fresh long can be taken once the prior position is closed, from the open until the cash flatten. The position is out at the target, the stop, or the cash close. The buy is a fraction of a share, at least $1, so the 25% share can fund it. The model does not choose the order.",
 };
 
 export const NQ_ASSET: Asset = {
@@ -47,10 +51,10 @@ export const NQ_ASSET: Asset = {
   strategyId: NQ_STRATEGY_ID,
   strategyName: "NQ liquidity sweep, long-only",
   setup: NQ_SETUP,
-  wholeShares: true,
-  quantityStep: 1,
+  wholeShares: false,
+  quantityStep: FRACTIONAL_SHARE_STEP,
   playbook:
-    "NQ is the Nasdaq-100 futures market. The long setup is a sweep of the prior day's low, a five-minute break of structure up, then a one-minute retrace and a one-minute break back up. The S&P futures have to break structure the same way by 10:20 ET or there is no trade. The buy is only that long continuation, from 9:30 to 10:30 ET. Shorts stay off. The stop is the retrace low and the target is the next high. This is not a claim on anyone's reported win rate. One entry a day. The position is out at the target, the stop, or the cash close.",
+    "NQ is the Nasdaq-100 futures market. The long setup is a sweep of the prior day's low, a five-minute break of structure up, then a one-minute retrace and a one-minute break back up. The S&P futures have to break structure the same way by 10:20 ET or there is no trade. The buy is only that long continuation, from 9:30 to 10:30 ET. Shorts stay off. The stop is the retrace low and the target is the next high. This is not a claim on anyone's reported win rate. One entry a day. The order is a fraction of the quoted price, at least $1, so the 25% share can fund it. The position is out at the target, the stop, or the cash close.",
 };
 
 export const BTC_ASSET: Asset = {
@@ -143,7 +147,7 @@ export function viewQuery(asset: Asset) {
 const STOCK_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
-  "Size is floored from 2% of the $1,000 working book divided by the stop distance. SPY can be a fraction of a share. NQ stays a whole contract.",
+  "Size is floored from 2% of the $1,000 working book divided by the stop distance. Uriel buys a fraction of a share, at least $1, the way Robinhood does.",
   "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. NQ stays at or below the previous losing size. Each SPY long is sized from its own stop.",
   "Two losses in a row locks NQ for the session. SPY does not use that lockout.",

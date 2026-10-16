@@ -1,4 +1,6 @@
+import { MIN_FRACTIONAL_NOTIONAL_CENTS } from "@/lib/assets";
 import { assertTradableSymbol } from "@/lib/broker/firewall";
+import { notionalCents } from "@/lib/risk/sizing";
 
 const MCP_URL = process.env.ROBINHOOD_MCP_URL ?? "https://agent.robinhood.com/mcp/trading";
 
@@ -97,8 +99,11 @@ export async function placeRobinhoodEquityOrder(input: {
   if (process.env.LIVE_TRADING !== "true" || process.env.ROBINHOOD_ORDER_CONFIRMED !== "true") {
     throw new Error("Live Robinhood orders are not armed.");
   }
-  if (!(input.stopPrice > 0) || input.quantity < 1) {
+  if (!(input.stopPrice > 0) || !(input.quantity > 0)) {
     throw new Error("Refusing a live order without a stop and a share quantity.");
+  }
+  if (notionalCents(input.quantity, input.limitPrice) < MIN_FRACTIONAL_NOTIONAL_CENTS) {
+    throw new Error("A fractional buy starts at $1.");
   }
   return robinhoodTool("review_equity_order", {
     symbol: input.symbol,

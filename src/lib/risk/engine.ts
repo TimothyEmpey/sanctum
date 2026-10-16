@@ -1,4 +1,4 @@
-import { assetShareCents } from "@/lib/assets";
+import { assetShareCents, MIN_FRACTIONAL_NOTIONAL_CENTS } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { NQ_SETUP, nqWatchOpen } from "@/lib/strategy/nq-sweep";
@@ -156,6 +156,14 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
       shares = fitted;
     }
     if (heldToLastLoss) reasons.push("Position size reduced to the previous losing trade.");
+    if (
+      !wholeShares &&
+      proposal.market !== "crypto" &&
+      shares + 1e-9 >= minQty &&
+      notionalCents(shares, proposal.entryPrice) < MIN_FRACTIONAL_NOTIONAL_CENTS
+    ) {
+      reasons.push("A fractional buy starts at $1.");
+    }
   }
 
   const riskCents = dollarRiskCents(Math.max(shares, 0), proposal.entryPrice, proposal.stopPrice);

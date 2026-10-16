@@ -11,7 +11,7 @@ export type TradeProposal = {
   now: Date;
   /** Crypto uses the UTC session. Stocks stay on the NYSE clock. */
   market?: "nyse" | "crypto";
-  /** 1 for whole shares. Crypto uses a fraction such as 0.0001. */
+  /** 1 for a whole share. Robinhood fractions use 0.000001. Crypto uses 0.0001. */
   quantityStep?: number;
 };
 

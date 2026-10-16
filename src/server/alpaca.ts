@@ -76,6 +76,7 @@ export function paperBracketOrder(input: {
 }) {
   const asset = assetBySymbol(input.symbol);
   if (!asset || asset.assetClass !== "stocks") throw new UntouchableSymbolError(input.symbol);
+  if (asset.symbol === "NQ") throw new Error("Alpaca paper has no Nasdaq futures contract.");
   if (asset.wholeShares && (!Number.isInteger(input.quantity) || input.quantity < 1)) {
     throw new Error("Alpaca paper stock orders must be a positive whole number of shares.");
   }
@@ -224,6 +225,7 @@ export function sellPaperShares(symbol: string, quantity: number) {
   const asset = assetBySymbol(symbol);
   assertTradableSymbol(symbol);
   if (!asset) throw new UntouchableSymbolError(symbol);
+  if (asset.symbol === "NQ") throw new Error("Alpaca paper has no Nasdaq futures contract.");
   if (asset.wholeShares && (!Number.isInteger(quantity) || quantity < 1)) {
     throw new Error("Exit quantity must be a positive whole number of shares.");
   }

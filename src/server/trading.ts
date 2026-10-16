@@ -588,6 +588,12 @@ export async function flattenAgentTrades(
         baselineQuantity: 0,
       });
       const asset = assetBySymbol(trade.symbol);
+      if (asset?.symbol === "NQ") {
+        const mark = (await latestMark(accountId, trade.symbol)) ?? trade.entryPrice;
+        await closeTrade(trade, mark, purpose, now);
+        closed.push(trade.symbol);
+        continue;
+      }
       const sold = await sellPaperShares(trade.symbol, trade.quantity);
       if (asset?.market === "crypto" && sold.status !== "filled") {
         await logEvent(accountId, "BROKER", `${trade.symbol} flatten was not filled. It will retry.`, "warn");
@@ -659,17 +665,8 @@ async function executeProposal(
     await logEvent(account.id, "RISK_BLOCK", "Live and paper execution are long-only.", "warn");
     return;
   }
-  if (alpacaPaperConfigured() && proposal.symbol === "NQ") {
-    await prisma.strategySession.update({
-      where: { id: session.id },
-      data: { lastSignalBarTs: new Date(proposal.signalBarTs) },
-    });
-    await logEvent(account.id, "BROKER", "Alpaca paper has no Nasdaq futures contract. No order was sent.", "warn");
-    return;
-  }
-
   const reserved = notionalCents(decision.shares, proposal.entryPrice);
-  if (alpacaPaperConfigured()) {
+  if (alpacaPaperConfigured() && proposal.symbol !== "NQ") {
     let orderId: string | null = null;
     let placedId: string | null = null;
     try {
@@ -833,7 +830,10 @@ async function executeProposal(
         accountId: account.id,
         kind: "ENTRY",
         level: "info",
-        message: `Bought ${formatQty(decision.shares)} ${proposal.symbol} at ${fill.toFixed(2)}. Stop is working at ${proposal.stopPrice.toFixed(2)}.`,
+        message:
+          proposal.symbol === "NQ"
+            ? `Bought ${formatQty(decision.shares)} NQ at ${fill.toFixed(2)}. This is a fraction of the quote on the working book. Alpaca paper has no Nasdaq contract. Stop is working at ${proposal.stopPrice.toFixed(2)}.`
+            : `Bought ${formatQty(decision.shares)} ${proposal.symbol} at ${fill.toFixed(2)}. Stop is working at ${proposal.stopPrice.toFixed(2)}.`,
       },
     });
   });
@@ -1236,6 +1236,7 @@ export async function tick(now = new Date()): Promise<{ ok: true; beat: Heartbea
 
   if (clock.tradingDay) {
     if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now, STOCK_SYMBOLS);
+    else await manageOpenTrades(account.id, now, ["NQ"]);
     if (haltReason || clock.flattenDue) {
       const accountId = account.id;
       const sessions = await Promise.all(STOCK_SYMBOLS.map((symbol) => ensureSession(accountId, clock.dateKey, symbol)));

@@ -49,8 +49,8 @@ describe("alpaca paper broker", () => {
     ).toThrow(/stop/);
   });
 
-  it("builds an NQ bracket and a crypto limit without a take-profit", () => {
-    expect(
+  it("builds a crypto limit without a take-profit and keeps NQ off Alpaca", () => {
+    expect(() =>
       paperBracketOrder({
         symbol: "NQ",
         quantity: 1,
@@ -58,8 +58,8 @@ describe("alpaca paper broker", () => {
         stopPrice: 490,
         targetPrice: 525,
         clientOrderId: "uriel-nq",
-      }).symbol,
-    ).toBe("NQ");
+      }),
+    ).toThrow(/Nasdaq/);
     expect(
       paperCryptoLimitBuy({ symbol: "BTC/USD", quantity: 0.01, limitPrice: 100_000, clientOrderId: "fonzo-btc" }),
     ).toMatchObject({
@@ -76,7 +76,7 @@ describe("alpaca paper broker", () => {
     expect(() => paperCryptoLimitBuy({ symbol: "SPY", quantity: 1, limitPrice: 10, clientOrderId: "nope" })).toThrow(/untouchable/);
   });
 
-  it("allows a fractional SPY bracket and keeps NQ whole", () => {
+  it("allows a fractional SPY bracket and does not send NQ to Alpaca", () => {
     expect(
       paperBracketOrder({
         symbol: "SPY",
@@ -90,12 +90,12 @@ describe("alpaca paper broker", () => {
     expect(() =>
       paperBracketOrder({
         symbol: "NQ",
-        quantity: 0.5,
-        limitPrice: 500,
-        stopPrice: 490,
-        targetPrice: 525,
+        quantity: 0.008,
+        limitPrice: 30_000,
+        stopPrice: 29_900,
+        targetPrice: 30_200,
         clientOrderId: "uriel-nq-fraction",
       }),
-    ).toThrow(/whole number/);
+    ).toThrow(/Nasdaq/);
   });
 });
