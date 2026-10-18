@@ -26,7 +26,7 @@ US equities are not a 24-hour market. The process stays up. SPY looks for a long
 
 ## Robinhood
 
-Alpaca paper is the test broker. Set `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, and `APCA_API_BASE_URL=https://paper-api.alpaca.markets`. The client refuses any other host. The $1,000 working book is what the desk sizes and displays. Alpaca equity is stored beside it. Stock orders are brackets. Crypto orders are a limit buy plus a separate stop, with no take-profit. The risk engine approves both before anything is sent.
+Alpaca paper is the test broker. Set `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY`, and `APCA_API_BASE_URL=https://paper-api.alpaca.markets`. The client refuses any other host. The $1,000 working book is what the desk sizes and displays. Alpaca equity is stored beside it. A whole share is sent as a bracket. A fractional SPY buy is a simple day limit, the stop is its own day order, and Uriel sells the target. Crypto orders are a limit buy plus a separate stop, with no take-profit. The risk engine approves both before anything is sent.
 
 Robinhood does not give an agent the main brokerage account. The official path is a separate agentic account connected at `https://agent.robinhood.com/mcp/trading`. Put the bearer token in `ROBINHOOD_MCP_TOKEN` when you have one.
 

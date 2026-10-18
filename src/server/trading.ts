@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Account, Prisma, StrategySession, Trade } from "@prisma/client";
 import { ASSETS, assetBySymbol, assetShareCents, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, sameDesk, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
+import { fallbackTarget, fractionalExitChoice, matchingTarget } from "@/lib/broker/fractional-exit";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
 import { previousBusinessDays, retiredFlattenMinute, sessionClock, weekKey, type SessionClock } from "@/lib/market/calendar";
@@ -15,7 +16,6 @@ import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, Side } from "@/lib/risk/types";
 import { evaluateCryptoMomentum, type CryptoProposal } from "@/lib/strategy/crypto-momentum";
 import {
-  BROKER_CEILING_PCT,
   evaluateIntradayMomentum,
   MOMENTUM_SETUP,
   type MomentumProposal,
@@ -32,8 +32,10 @@ import {
   placePaperBracket,
   placePaperCryptoLimit,
   placePaperCryptoStop,
+  placePaperStockLimit,
+  placePaperStockStop,
   replacePaperStop,
-  sellPaperShares,
+  sellPaperSharesOnce,
   syncAlpacaPaper,
 } from "@/server/alpaca";
 import { fetchYahooBars } from "@/server/market";
@@ -93,6 +95,10 @@ function writeJson(file: string, value: unknown) {
 
 function clientOrderId(asset: Asset, orderId: string) {
   return `${asset.desk}-${orderId}`.slice(0, 48);
+}
+
+function wholeQuantity(shares: number) {
+  return shares >= 1 && Math.abs(shares - Math.round(shares)) < 1e-8;
 }
 
 function missingBrokerOrder(error: unknown) {
@@ -569,10 +575,22 @@ export async function flattenAgentTrades(
     const working = await prisma.order.findMany({
       where: { accountId, status: "WORKING", brokerOrderId: { not: null } },
     });
+    const filledExit = new Map<string, { price: number; purpose: string }>();
     for (const order of working) {
       if (!order.brokerOrderId || order.purpose === "ENTRY") continue;
       if (allowed && !allowed.has(order.symbol)) continue;
       if (kept.size > 0 && (!order.tradeId || !targetIds.has(order.tradeId))) continue;
+      try {
+        const remote = await getPaperOrder(order.brokerOrderId);
+        if (remote.status === "filled" && order.tradeId) {
+          const fill = roundPrice(Number(remote.filled_avg_price ?? order.stopPrice ?? order.limitPrice));
+          await prisma.order.update({ where: { id: order.id }, data: { status: "FILLED", fillPrice: fill, filledAt: now } });
+          filledExit.set(order.tradeId, { price: fill, purpose: order.purpose });
+          continue;
+        }
+      } catch {
+        // A missing order still needs the cancel attempt below.
+      }
       try {
         await cancelPaperOrder(order.brokerOrderId);
       } catch {
@@ -588,18 +606,25 @@ export async function flattenAgentTrades(
         baselineQuantity: 0,
       });
       const asset = assetBySymbol(trade.symbol);
+      const done = filledExit.get(trade.id);
+      if (done) {
+        await closeTrade(trade, done.price, done.purpose, now, { recordExitOrder: false });
+        closed.push(trade.symbol);
+        continue;
+      }
       if (asset?.symbol === "NQ") {
         const mark = (await latestMark(accountId, trade.symbol)) ?? trade.entryPrice;
         await closeTrade(trade, mark, purpose, now);
         closed.push(trade.symbol);
         continue;
       }
-      const sold = await sellPaperShares(trade.symbol, trade.quantity);
+      const sold = await sellPaperSharesOnce(trade.symbol, trade.quantity, `flat-${trade.id}`.slice(0, 48));
       if (asset?.market === "crypto" && sold.status !== "filled") {
         await logEvent(accountId, "BROKER", `${trade.symbol} flatten was not filled. It will retry.`, "warn");
         continue;
       }
-      const mark = (await latestMark(accountId, trade.symbol)) ?? trade.entryPrice;
+      const filledPx = Number(sold.filled_avg_price);
+      const mark = Number.isFinite(filledPx) && filledPx > 0 ? roundPrice(filledPx) : ((await latestMark(accountId, trade.symbol)) ?? trade.entryPrice);
       await closeTrade(trade, mark, purpose, now);
       closed.push(trade.symbol);
     }
@@ -716,6 +741,7 @@ async function executeProposal(
         return;
       }
       orderId = created.id;
+      const fractionalStock = asset.market !== "crypto" && !wholeQuantity(decision.shares);
       const placed =
         asset.market === "crypto"
           ? await placePaperCryptoLimit({
@@ -724,14 +750,23 @@ async function executeProposal(
               limitPrice: proposal.entryPrice,
               clientOrderId: clientOrderId(asset, created.id),
             })
-          : await placePaperBracket({
-              symbol: proposal.symbol,
-              quantity: decision.shares,
-              limitPrice: proposal.entryPrice,
-              stopPrice: proposal.stopPrice,
-              targetPrice: proposal.targetPrice,
-              clientOrderId: clientOrderId(asset, created.id),
-            });
+          : fractionalStock
+            ? await placePaperStockLimit({
+                symbol: proposal.symbol,
+                quantity: decision.shares,
+                limitPrice: proposal.entryPrice,
+                stopPrice: proposal.stopPrice,
+                targetPrice: proposal.targetPrice,
+                clientOrderId: clientOrderId(asset, created.id),
+              })
+            : await placePaperBracket({
+                symbol: proposal.symbol,
+                quantity: decision.shares,
+                limitPrice: proposal.entryPrice,
+                stopPrice: proposal.stopPrice,
+                targetPrice: proposal.targetPrice,
+                clientOrderId: clientOrderId(asset, created.id),
+              });
       placedId = placed.id;
       await prisma.order.update({ where: { id: created.id }, data: { brokerOrderId: placed.id } });
       await prisma.strategySession.update({
@@ -741,7 +776,9 @@ async function executeProposal(
       const exitLine =
         asset.market === "crypto"
           ? "Exit is 24:00 UTC."
-          : "Exit is the target, the stop, or the cash close.";
+          : fractionalStock
+            ? "The stop is sent when this buy fills. Uriel sells the target."
+            : "Exit is the target, the stop, or the cash close.";
       await logEvent(
         account.id,
         "ENTRY",
@@ -873,6 +910,181 @@ async function recoverUnsentEntries(accountId: string, symbols: readonly string[
   }
 }
 
+async function targetForFilledEntry(
+  accountId: string,
+  order: { symbol: string; limitPrice: number; stopPrice: number; createdAt: Date },
+  fill: number,
+  stop: number,
+  legTarget: string | null | undefined,
+) {
+  const fromLeg = legTarget == null ? null : roundPrice(Number(legTarget));
+  if (fromLeg != null && fromLeg > fill) return fromLeg;
+  const rows = await prisma.riskDecisionRecord.findMany({
+    where: { accountId, approved: true, createdAt: { lte: new Date(order.createdAt.getTime() + 5_000) } },
+    orderBy: { createdAt: "desc" },
+    take: 8,
+  });
+  for (const row of rows) {
+    const proposal = row.proposal as { symbol?: string; entryPrice?: number; stopPrice?: number; targetPrice?: number };
+    const target = matchingTarget(proposal, order, fill);
+    if (target != null) return target;
+  }
+  return fallbackTarget(fill, stop);
+}
+
+async function ensureStockStops(accountId: string, symbols: readonly string[]) {
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
+  });
+  for (const trade of trades) {
+    const asset = assetBySymbol(trade.symbol);
+    if (!asset || asset.symbol === "NQ" || asset.market !== "nyse" || wholeQuantity(trade.quantity)) continue;
+    const existing = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "STOP", status: "WORKING" },
+    });
+    if (existing) continue;
+    const exiting = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "TARGET", status: { in: ["WORKING", "FILLED"] } },
+    });
+    if (exiting) continue;
+    const stableId = `spy-stop-${trade.id}`.slice(0, 48);
+    try {
+      let remote: { id: string; status: string } | null = null;
+      try {
+        remote = await getPaperOrderByClientId(stableId);
+      } catch (error) {
+        if (!missingBrokerOrder(error)) throw error;
+      }
+      const reusable = remote != null && remote.status !== "filled" && !CLOSED_ORDER.has(remote.status);
+      const placed = reusable
+        ? remote
+        : await placePaperStockStop({
+            symbol: trade.symbol,
+            quantity: trade.quantity,
+            stopPrice: trade.stopPrice,
+            clientOrderId: remote ? `spy-stop-${trade.id}-${Date.now()}`.slice(0, 48) : stableId,
+          });
+      if (!placed?.id) continue;
+      await prisma.order.create({
+        data: {
+          accountId,
+          tradeId: trade.id,
+          symbol: trade.symbol,
+          side: "SELL",
+          type: "STOP",
+          purpose: "STOP",
+          quantity: trade.quantity,
+          stopPrice: trade.stopPrice,
+          status: "WORKING",
+          brokerOrderId: placed.id,
+        },
+      });
+      await logEvent(accountId, "STOP", `Stop working at ${trade.stopPrice.toFixed(2)} on ${formatQty(trade.quantity)} ${trade.symbol}.`);
+    } catch (error) {
+      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Stock stop was not accepted.", "warn");
+    }
+  }
+}
+
+async function cancelWorkingStop(accountId: string, tradeId: string): Promise<"clear" | "filled" | "live"> {
+  const stopOrder = await prisma.order.findFirst({
+    where: { tradeId, purpose: "STOP", status: "WORKING" },
+  });
+  if (!stopOrder) return "clear";
+  if (!stopOrder.brokerOrderId) {
+    await prisma.order.update({ where: { id: stopOrder.id }, data: { status: "CANCELLED" } });
+    return "clear";
+  }
+  try {
+    const remote = await getPaperOrder(stopOrder.brokerOrderId);
+    if (remote.status === "filled") return "filled";
+    if (!CLOSED_ORDER.has(remote.status)) await cancelPaperOrder(stopOrder.brokerOrderId);
+  } catch (error) {
+    if (!missingBrokerOrder(error)) {
+      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Could not cancel the stop before the target sell.", "warn");
+      return "live";
+    }
+  }
+  await prisma.order.update({ where: { id: stopOrder.id }, data: { status: "CANCELLED" } });
+  return "clear";
+}
+
+async function exitFractionalTargets(accountId: string, now: Date, symbols: readonly string[]) {
+  const clock = sessionClock(now);
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
+  });
+  for (const trade of trades) {
+    const asset = assetBySymbol(trade.symbol);
+    if (!asset || asset.symbol === "NQ" || asset.market !== "nyse" || wholeQuantity(trade.quantity)) continue;
+    if (isSessionExitSetup(trade.setup)) continue;
+    const pending = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "TARGET", status: { in: ["WORKING", "FILLED"] } },
+    });
+    if (pending?.status === "FILLED") {
+      await closeTrade(trade, pending.fillPrice ?? trade.targetPrice, "TARGET", now, { recordExitOrder: false });
+      continue;
+    }
+    if (pending) continue;
+    const bars = await prisma.marketBar.findMany({
+      where: { accountId, symbol: trade.symbol, timeframe: "1m", ts: { gte: trade.openedAt } },
+      orderBy: { ts: "asc" },
+    });
+    const choice = fractionalExitChoice({
+      openedAt: trade.openedAt.getTime(),
+      stop: trade.stopPrice,
+      target: trade.targetPrice,
+      bars: bars
+        .filter((bar) => etParts(bar.ts).dateKey === clock.dateKey)
+        .map((bar) => ({ ts: bar.ts.getTime(), high: bar.high, low: bar.low })),
+    });
+    if (choice !== "target") continue;
+    const stopState = await cancelWorkingStop(accountId, trade.id);
+    if (stopState !== "clear") continue;
+    try {
+      const sold = await sellPaperSharesOnce(trade.symbol, trade.quantity, `spy-exit-${trade.id}`.slice(0, 48));
+      const fill = roundPrice(Number(sold.filled_avg_price ?? trade.targetPrice));
+      if (sold.status === "filled") {
+        await prisma.order.create({
+          data: {
+            accountId,
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            side: "SELL",
+            type: "MARKET",
+            purpose: "TARGET",
+            quantity: trade.quantity,
+            limitPrice: trade.targetPrice,
+            fillPrice: fill,
+            status: "FILLED",
+            brokerOrderId: sold.id,
+            filledAt: now,
+          },
+        });
+        await closeTrade(trade, fill, "TARGET", now, { recordExitOrder: false });
+      } else if (sold.id) {
+        await prisma.order.create({
+          data: {
+            accountId,
+            tradeId: trade.id,
+            symbol: trade.symbol,
+            side: "SELL",
+            type: "MARKET",
+            purpose: "TARGET",
+            quantity: trade.quantity,
+            limitPrice: trade.targetPrice,
+            status: "WORKING",
+            brokerOrderId: sold.id,
+          },
+        });
+        await logEvent(accountId, "EXIT", `Target sell working for ${formatQty(trade.quantity)} ${trade.symbol}.`);
+      }
+    } catch (error) {
+      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Target sell was not accepted.", "warn");
+    }
+  }
+}
+
 async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly string[]) {
   await recoverUnsentEntries(accountId, symbols, now);
   const entries = await prisma.order.findMany({
@@ -880,16 +1092,24 @@ async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly s
   });
   for (const order of entries) {
     if (!order.brokerOrderId || order.limitPrice == null || order.stopPrice == null) continue;
+    const limitPrice = order.limitPrice;
+    const orderStop = order.stopPrice;
     const remote = await getPaperOrder(order.brokerOrderId);
     const asset = assetBySymbol(order.symbol);
     if (remote.status === "filled") {
-      const fill = roundPrice(Number(remote.filled_avg_price ?? order.limitPrice));
+      const fill = roundPrice(Number(remote.filled_avg_price ?? limitPrice));
       const stopLeg = remote.legs?.find((leg) => leg.type === "stop" || leg.stop_price);
       const targetLeg = remote.legs?.find((leg) => leg.type === "limit" && leg.side === "sell");
-      const stop = roundPrice(Number(stopLeg?.stop_price ?? order.stopPrice));
-      const target = roundPrice(Number(targetLeg?.limit_price ?? fill * (1 + BROKER_CEILING_PCT)));
+      const stop = roundPrice(Number(stopLeg?.stop_price ?? orderStop));
+      const target = await targetForFilledEntry(
+        accountId,
+        { symbol: order.symbol, limitPrice, stopPrice: orderStop, createdAt: order.createdAt },
+        fill,
+        stop,
+        targetLeg?.limit_price,
+      );
       const quantity = Number(remote.filled_qty ?? order.quantity);
-      const reserved = notionalCents(order.quantity, order.limitPrice);
+      const reserved = notionalCents(order.quantity, limitPrice);
       const paid = notionalCents(quantity, fill);
       await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>`
@@ -982,6 +1202,9 @@ async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly s
     if (claimed.count !== 1) continue;
     await closeTrade(trade, fill, leg.purpose, now, { recordExitOrder: false });
   }
+
+  await ensureStockStops(accountId, symbols);
+  await exitFractionalTargets(accountId, now, symbols);
 
   const open = await prisma.trade.findMany({
     where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },

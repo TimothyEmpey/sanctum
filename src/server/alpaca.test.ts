@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { assertPaperBaseUrl, paperBracketOrder, paperCryptoLimitBuy, paperCryptoStop } from "@/server/alpaca";
+import { fallbackTarget, fractionalExitChoice, matchingTarget } from "@/lib/broker/fractional-exit";
+import { assertPaperBaseUrl, paperBracketOrder, paperCryptoLimitBuy, paperCryptoStop, paperStockLimitBuy, paperStockStop } from "@/server/alpaca";
 
 describe("alpaca paper broker", () => {
   it("locks orders to the paper host", () => {
@@ -76,8 +77,20 @@ describe("alpaca paper broker", () => {
     expect(() => paperCryptoLimitBuy({ symbol: "SPY", quantity: 1, limitPrice: 10, clientOrderId: "nope" })).toThrow(/untouchable/);
   });
 
-  it("allows a fractional SPY bracket and does not send NQ to Alpaca", () => {
-    expect(
+  it("sends a fractional SPY buy as a simple day order and a separate stop", () => {
+    const buy = paperStockLimitBuy({
+      symbol: "SPY",
+      quantity: 0.324,
+      limitPrice: 770,
+      stopPrice: 768,
+      targetPrice: 774,
+      clientOrderId: "uriel-spy-fraction",
+    });
+    expect(buy).toMatchObject({ symbol: "SPY", qty: "0.324", side: "buy", type: "limit", time_in_force: "day" });
+    expect(buy).not.toHaveProperty("order_class");
+    expect(buy).not.toHaveProperty("take_profit");
+    expect(buy).not.toHaveProperty("stop_loss");
+    expect(() =>
       paperBracketOrder({
         symbol: "SPY",
         quantity: 0.324,
@@ -86,16 +99,35 @@ describe("alpaca paper broker", () => {
         targetPrice: 774,
         clientOrderId: "uriel-spy-fraction",
       }),
-    ).toMatchObject({ symbol: "SPY", qty: "0.324", time_in_force: "day" });
-    expect(() =>
-      paperBracketOrder({
-        symbol: "NQ",
-        quantity: 0.008,
-        limitPrice: 30_000,
-        stopPrice: 29_900,
-        targetPrice: 30_200,
-        clientOrderId: "uriel-nq-fraction",
+    ).toThrow(/bracket/);
+    const stop = paperStockStop({ symbol: "SPY", quantity: 0.324, stopPrice: 768, clientOrderId: "spy-stop-1" });
+    expect(stop).toMatchObject({ symbol: "SPY", qty: "0.324", side: "sell", type: "stop", time_in_force: "day", stop_price: "768.00" });
+    expect(stop).not.toHaveProperty("order_class");
+    expect(() => paperStockLimitBuy({ symbol: "NQ", quantity: 0.008, limitPrice: 30_000, stopPrice: 29_900, targetPrice: 30_200, clientOrderId: "nq" })).toThrow(/Nasdaq/);
+    expect(() => paperStockStop({ symbol: "NQ", quantity: 0.008, stopPrice: 29_900, clientOrderId: "nq-stop" })).toThrow(/Nasdaq/);
+  });
+
+  it("lets the broker stop win when the same bar also trades the target", () => {
+    const opened = Date.parse("2026-10-16T14:30:00.000Z");
+    expect(
+      fractionalExitChoice({
+        openedAt: opened,
+        stop: 760,
+        target: 764,
+        bars: [{ ts: opened, high: 764.2, low: 759.5 }],
       }),
-    ).toThrow(/Nasdaq/);
+    ).toBe("stop");
+    expect(
+      fractionalExitChoice({
+        openedAt: opened,
+        stop: 760,
+        target: 764,
+        bars: [{ ts: opened - 60_000, high: 770, low: 750 }, { ts: opened + 60_000, high: 764.1, low: 762 }],
+      }),
+    ).toBe("target");
+    expect(fractionalExitChoice({ openedAt: opened, stop: 760, target: 764, bars: [{ ts: opened, high: 763, low: 761 }] })).toBe("hold");
+    expect(matchingTarget({ symbol: "SPY", entryPrice: 762.97, stopPrice: 760.64, targetPrice: 765.1 }, { symbol: "SPY", limitPrice: 762.97, stopPrice: 760.64 }, 762.5)).toBe(765.1);
+    expect(matchingTarget({ symbol: "SPY", entryPrice: 100, stopPrice: 99, targetPrice: 101 }, { symbol: "SPY", limitPrice: 762.97, stopPrice: 760.64 }, 762.5)).toBeNull();
+    expect(fallbackTarget(762.5, 760.64)).toBe(764.36);
   });
 });

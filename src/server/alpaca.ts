@@ -83,6 +83,42 @@ export function paperBracketOrder(input: {
   if (!asset.wholeShares && !(input.quantity > 0)) {
     throw new Error("Alpaca paper stock orders need a positive quantity.");
   }
+  if (!Number.isInteger(input.quantity) || input.quantity < 1) {
+    throw new Error("A fractional order cannot be a bracket.");
+  }
+  if (!(input.stopPrice > 0) || input.stopPrice >= input.limitPrice) {
+    throw new Error("Refusing a paper order without a stop below the limit.");
+  }
+  if (!(input.targetPrice > input.limitPrice)) {
+    throw new Error("Refusing a paper order without a target above the limit.");
+  }
+  return {
+    symbol: input.symbol,
+    qty: formatOrderQty(input.quantity, true),
+    side: "buy",
+    type: "limit",
+    time_in_force: "day",
+    limit_price: input.limitPrice.toFixed(2),
+    order_class: "bracket",
+    client_order_id: input.clientOrderId,
+    take_profit: { limit_price: input.targetPrice.toFixed(2) },
+    stop_loss: { stop_price: input.stopPrice.toFixed(2) },
+  };
+}
+
+/** Fractional SPY buy. Alpaca accepts this only when no bracket is attached. */
+export function paperStockLimitBuy(input: {
+  symbol: string;
+  quantity: number;
+  limitPrice: number;
+  stopPrice: number;
+  targetPrice: number;
+  clientOrderId: string;
+}) {
+  const asset = assetBySymbol(input.symbol);
+  if (!asset || asset.assetClass !== "stocks") throw new UntouchableSymbolError(input.symbol);
+  if (asset.symbol === "NQ") throw new Error("Alpaca paper has no Nasdaq futures contract.");
+  if (!(input.quantity > 0)) throw new Error("Alpaca paper stock orders need a positive quantity.");
   if (!(input.stopPrice > 0) || input.stopPrice >= input.limitPrice) {
     throw new Error("Refusing a paper order without a stop below the limit.");
   }
@@ -96,10 +132,25 @@ export function paperBracketOrder(input: {
     type: "limit",
     time_in_force: "day",
     limit_price: input.limitPrice.toFixed(2),
-    order_class: "bracket",
     client_order_id: input.clientOrderId,
-    take_profit: { limit_price: input.targetPrice.toFixed(2) },
-    stop_loss: { stop_price: input.stopPrice.toFixed(2) },
+  };
+}
+
+/** Protective stop for a fractional share. It is a separate day order, not a bracket leg. */
+export function paperStockStop(input: { symbol: string; quantity: number; stopPrice: number; clientOrderId: string }) {
+  const asset = assetBySymbol(input.symbol);
+  if (!asset || asset.assetClass !== "stocks") throw new UntouchableSymbolError(input.symbol);
+  if (asset.symbol === "NQ") throw new Error("Alpaca paper has no Nasdaq futures contract.");
+  if (!(input.quantity > 0)) throw new Error("Alpaca paper stock orders need a positive quantity.");
+  if (!(input.stopPrice > 0)) throw new Error("Refusing a paper stop without a price.");
+  return {
+    symbol: input.symbol,
+    qty: formatOrderQty(input.quantity, asset.wholeShares),
+    side: "sell",
+    type: "stop",
+    time_in_force: "day",
+    stop_price: input.stopPrice.toFixed(2),
+    client_order_id: input.clientOrderId,
   };
 }
 
@@ -145,6 +196,20 @@ export function placePaperBracket(input: Parameters<typeof paperBracketOrder>[0]
   return alpacaFetch<AlpacaOrder>("/v2/orders", {
     method: "POST",
     body: JSON.stringify(paperBracketOrder(input)),
+  });
+}
+
+export function placePaperStockLimit(input: Parameters<typeof paperStockLimitBuy>[0]) {
+  return alpacaFetch<AlpacaOrder>("/v2/orders", {
+    method: "POST",
+    body: JSON.stringify(paperStockLimitBuy(input)),
+  });
+}
+
+export function placePaperStockStop(input: Parameters<typeof paperStockStop>[0]) {
+  return alpacaFetch<AlpacaOrder>("/v2/orders", {
+    method: "POST",
+    body: JSON.stringify(paperStockStop(input)),
   });
 }
 
@@ -221,7 +286,7 @@ export function placePaperCryptoStop(input: Parameters<typeof paperCryptoStop>[0
   return alpacaFetch<AlpacaOrder>("/v2/orders", { method: "POST", body: JSON.stringify(paperCryptoStop(input)) });
 }
 
-export function sellPaperShares(symbol: string, quantity: number) {
+export function sellPaperShares(symbol: string, quantity: number, clientOrderId?: string) {
   const asset = assetBySymbol(symbol);
   assertTradableSymbol(symbol);
   if (!asset) throw new UntouchableSymbolError(symbol);
@@ -238,8 +303,21 @@ export function sellPaperShares(symbol: string, quantity: number) {
       side: "sell",
       type: "market",
       time_in_force: asset.market === "crypto" ? "ioc" : "day",
+      ...(clientOrderId ? { client_order_id: clientOrderId } : {}),
     }),
   });
+}
+
+/** Reuse the broker order for this client id so a retry cannot sell the share twice. */
+export async function sellPaperSharesOnce(symbol: string, quantity: number, clientOrderId: string) {
+  try {
+    const existing = await getPaperOrderByClientId(clientOrderId);
+    if (existing.id) return existing;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!/404|not found/i.test(message)) throw error;
+  }
+  return sellPaperShares(symbol, quantity, clientOrderId);
 }
 
 export async function syncAlpacaPaper(accountId: string, now: Date) {
