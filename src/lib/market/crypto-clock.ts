@@ -52,20 +52,10 @@ export function cryptoSessionClock(now: Date): CryptoClock {
   };
 }
 
-/** Polls start five minutes before the 23:30 UTC buy. */
-const HOT_START_MINUTE = CRYPTO_ENTRY_START - 5;
-
 /**
- * 20s polls from 23:25 UTC through 00:40 UTC. Otherwise the next UTC hour,
- * or 23:25 when that hour would sleep through the buy.
+ * Fonzo stays on a 20-second poll for as long as the process is running.
+ * `fonzo stop` and `sanctum stop` are what take him offline.
  */
-export function fonzoWaitMs(now: Date, elapsedMs = 0) {
-  const minutes = utcParts(now).minutes;
-  const hot = minutes >= HOT_START_MINUTE || minutes < 40;
-  if (hot) return Math.max(1_000, 20_000 - elapsedMs);
-  const secondMs = now.getUTCSeconds() * 1000 + (now.getTime() % 1000);
-  const intoHour = now.getUTCMinutes() * 60_000 + secondMs;
-  const untilHour = intoHour === 0 ? 60 * 60 * 1000 : 60 * 60 * 1000 - intoHour;
-  const untilHot = (HOT_START_MINUTE - minutes) * 60_000 - secondMs;
-  return Math.max(1_000, Math.min(untilHour, untilHot));
+export function fonzoWaitMs(_now: Date, elapsedMs = 0) {
+  return Math.max(1_000, 20_000 - elapsedMs);
 }

@@ -1546,10 +1546,8 @@ export async function tickFonzo(now = new Date()): Promise<{ ok: true; beat: Fon
   let account = await prisma.account.findFirst();
   if (!account) return { ok: false, reason: "No account" };
   const clock = cryptoSessionClock(now);
-  const minutes = utcParts(now).minutes;
-  const hot = minutes >= 23 * 60 + 25 || minutes < 40;
   try {
-    await refreshAssets(account.id, CRYPTO_ASSETS, hot, now, "crypto");
+    await refreshAssets(account.id, CRYPTO_ASSETS, true, now, "crypto");
   } catch (error) {
     await logEvent(account.id, "MARKET", error instanceof Error ? error.message : "Crypto quotes failed", "warn");
   }
