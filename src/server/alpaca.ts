@@ -217,6 +217,15 @@ export function getPaperOrder(orderId: string) {
   return alpacaFetch<AlpacaOrder>(`/v2/orders/${encodeURIComponent(orderId)}?nested=true`);
 }
 
+export async function paperPositionQty(symbol: string) {
+  const positions = await alpacaFetch<AlpacaPosition[]>("/v2/positions");
+  const want = normalizeSymbol(symbol);
+  const found = positions.find((position) => normalizeSymbol(position.symbol) === want);
+  if (!found || (found.side && found.side !== "long")) return 0;
+  const qty = Number(found.qty);
+  return Number.isFinite(qty) ? Math.abs(qty) : 0;
+}
+
 export function getPaperOrderByClientId(clientOrderId: string) {
   return alpacaFetch<AlpacaOrder>(
     `/v2/orders:by_client_order_id?client_order_id=${encodeURIComponent(clientOrderId)}`,
@@ -343,7 +352,7 @@ export async function syncAlpacaPaper(accountId: string, now: Date) {
   for (const position of positions) {
     const symbol = normalizeSymbol(position.symbol);
     const qty = Math.abs(Number(position.qty));
-    if (!Number.isFinite(qty) || qty <= 0) continue;
+    if (!Number.isFinite(qty) || qty < 1e-8) continue;
     const averagePrice = Number(position.avg_entry_price ?? 0);
     const marketPrice = Number(position.current_price ?? averagePrice);
     const asset = assetBySymbol(symbol);

@@ -10,7 +10,7 @@ type YahooChart = {
   };
 };
 
-export async function fetchYahooBars(symbol: string, interval: "1m" | "1d", range: string): Promise<Bar[]> {
+export async function fetchYahooBars(symbol: string, interval: "1m" | "1h" | "1d", range: string): Promise<Bar[]> {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&range=${range}&includePrePost=false`;
   const response = await fetch(url, {
     headers: { "user-agent": "uriel-paper/0.1" },

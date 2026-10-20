@@ -3,9 +3,10 @@ import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { previousBusinessDays, sessionClock } from "@/lib/market/calendar";
 import { etInstant, etParts } from "@/lib/market/time";
 import type { Bar } from "@/lib/strategy/intraday-momentum";
+import { evaluateCryptoDiscount } from "@/lib/strategy/crypto-discount";
 import { evaluateNqSweep } from "@/lib/strategy/nq-sweep";
 import { evaluateSpyStructure } from "@/lib/strategy/spy-structure";
-import { blockingReason, describeAssetTrigger, describeNqTrigger, describeSpyTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
+import { blockingReason, describeAssetTrigger, describeNqTrigger, describeSequenceTrigger, describeSpyTrigger, heartbeatFresh } from "@/lib/strategy/trigger-caveat";
 import { prisma } from "@/server/db";
 
 function proposalSymbol(proposal: unknown) {
@@ -45,10 +46,6 @@ export function sessionRiskReasons(
   return null;
 }
 
-/**
- * The charts keep the latest 500 minutes. Crypto's signal is 00:00–00:29 UTC,
- * which is outside that window later in the day, so the caveat reads these bars itself.
- */
 /** Regular-hours minutes for one ET session. The Nasdaq caveat needs the whole morning, not the 10:00 print. */
 export async function loadDayMinutes(accountId: string, symbol: string, dateKey: string): Promise<Bar[]> {
   const rows = await prisma.marketBar.findMany({
@@ -80,15 +77,26 @@ export async function loadStructureMinutes(accountId: string, symbol: string, da
   return [...yesterday, ...today];
 }
 
+/** Hourly bars for the BTC and ETH range. The caveat reads the same bars the playbook reads. */
+export async function loadStructureHours(accountId: string, symbol: string): Promise<Bar[]> {
+  const rows = await prisma.marketBar.findMany({
+    where: { accountId, symbol, timeframe: "1h" },
+    orderBy: { ts: "asc" },
+  });
+  return rows.map((bar) => ({
+    ts: bar.ts.getTime(),
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
+}
+
 export async function loadSignalMinutes(accountId: string, asset: Asset, now: Date): Promise<Bar[]> {
   const stock = sessionClock(now);
-  const crypto = cryptoSessionClock(now);
-  const range =
-    asset.market === "crypto"
-      ? { from: new Date(`${crypto.dateKey}T00:00:00.000Z`), to: new Date(`${crypto.dateKey}T00:29:00.000Z`) }
-      : stock.tradingDay
-        ? { from: etInstant(stock.dateKey, 9, 59), to: etInstant(stock.dateKey, 10, 0) }
-        : null;
+  if (asset.market === "crypto") return loadStructureHours(accountId, asset.symbol);
+  const range = stock.tradingDay ? { from: etInstant(stock.dateKey, 9, 59), to: etInstant(stock.dateKey, 10, 0) } : null;
   if (!range) return [];
   const rows = await prisma.marketBar.findMany({
     where: { accountId, symbol: asset.symbol, timeframe: "1m", ts: { gte: range.from, lte: range.to } },
@@ -119,8 +127,7 @@ export function assetTriggerCaveat(input: {
   const stock = sessionClock(input.now);
   const crypto = cryptoSessionClock(input.now);
   const dateKey = input.asset.market === "crypto" ? crypto.dateKey : stock.dateKey;
-  const quiet =
-    input.asset.market === "crypto" ? crypto.phase === "signal" || crypto.phase === "wait" : stock.phase === "closed" || stock.phase === "idle";
+  const quiet = input.asset.market === "crypto" ? false : stock.phase === "closed" || stock.phase === "idle";
   const block =
     input.haltReason ??
     (input.paused ? (input.asset.desk === "fonzo" ? "Fonzo is paused." : "Uriel is paused.") : null) ??
@@ -154,6 +161,18 @@ export function assetTriggerCaveat(input: {
       tradesTaken: 0,
     });
     return describeSpyTrigger(view.state, block);
+  }
+  if (input.asset.market === "crypto") {
+    if (input.traded) return null;
+    const view = evaluateCryptoDiscount({
+      now: input.now,
+      bars: input.minutes,
+      symbol: input.asset.symbol as "BTC/USD" | "ETH/USD",
+      strategy: input.asset.strategyId,
+      hasOpenPosition: false,
+      tradesTaken: 0,
+    });
+    return describeSequenceTrigger(view.state, block);
   }
   return describeAssetTrigger({
     market: input.asset.market,

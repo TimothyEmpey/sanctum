@@ -214,7 +214,7 @@ describe("risk engine", () => {
     expect(decision.shares).toBe(500);
   });
 
-  it("approves a fractional crypto buy during the UTC window even after three stock day trades", () => {
+  it("approves a fractional crypto buy from the 2% budget and the 25% share", () => {
     const decision = evaluateRisk(
       proposal({
         symbol: "BTC/USD",
@@ -222,8 +222,8 @@ describe("risk engine", () => {
         stopPrice: 98_000,
         targetPrice: 105_000,
         requestedShares: 0.01,
-        setup: "CRYPTO_LAST_HALF",
-        now: new Date("2026-10-02T23:30:00.000Z"),
+        setup: "CRYPTO_DISCOUNT",
+        now: new Date("2026-10-02T12:00:00.000Z"),
         market: "crypto",
         quantityStep: 0.0001,
       }),
@@ -238,7 +238,9 @@ describe("risk engine", () => {
     );
     expect(decision.approved).toBe(true);
     expect(decision.shares).toBeCloseTo(0.0025, 8);
+    expect(decision.shares).toBeLessThan(1);
     expect(decision.reasons.join(" ")).toMatch(/25%/);
+    expect(decision.reasons.join(" ")).not.toMatch(/during/);
     const paused = evaluateRisk(
       proposal({
         symbol: "ETH/USD",

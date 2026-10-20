@@ -1,6 +1,5 @@
 import { assetShareCents, MIN_FRACTIONAL_NOTIONAL_CENTS } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
-import { cryptoSessionClock } from "@/lib/market/crypto-clock";
 import { NQ_SETUP, nqWatchOpen } from "@/lib/strategy/nq-sweep";
 import { SPY_SETUP, spyWatchOpen } from "@/lib/strategy/spy-structure";
 import { RISK_LIMITS, TRADABLE_SYMBOL } from "@/lib/risk/constants";
@@ -102,13 +101,13 @@ export function evaluateRisk(proposal: TradeProposal, state: RiskState): RiskDec
   if (state.haltReason) reasons.push(`Trading halted: ${state.haltReason}`);
   const windowOpen =
     proposal.market === "crypto"
-      ? cryptoSessionClock(proposal.now).entryWindowOpen
+      ? true
       : proposal.setup === NQ_SETUP
         ? nqWatchOpen(proposal.now)
         : proposal.setup === SPY_SETUP
           ? spyWatchOpen(proposal.now)
           : clock.entryWindowOpen;
-  const phaseLabel = proposal.market === "crypto" ? cryptoSessionClock(proposal.now).phase : clock.phase;
+  const phaseLabel = clock.phase;
   if (!windowOpen) reasons.push(`New positions are closed during ${phaseLabel}.`);
   if (dayPnl <= -riskBudgetCents(state.dayStartEquityCents, RISK_LIMITS.maxDailyLoss)) {
     reasons.push("Daily loss limit reached. No new positions.");

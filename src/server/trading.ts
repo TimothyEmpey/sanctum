@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Account, Prisma, StrategySession, Trade } from "@prisma/client";
 import { ASSETS, assetBySymbol, assetShareCents, CRYPTO_ASSETS, CRYPTO_SYMBOLS, isSessionExitSetup, sameDesk, STOCK_ASSETS, STOCK_SYMBOLS, type Asset } from "@/lib/assets";
+import { availableFromBalanceError, sellableQty } from "@/lib/broker/crypto-qty";
 import { fallbackTarget, fractionalExitChoice, matchingTarget } from "@/lib/broker/fractional-exit";
 import { assertAgentExit, assertTradableSymbol } from "@/lib/broker/firewall";
 import { isStrategyBar } from "@/lib/market/bars";
@@ -14,7 +15,7 @@ import { evaluateRisk, haltReasonForState } from "@/lib/risk/engine";
 import { deployedNotionalCents, dollarRiskCents, notionalCents, quantityForRisk, sharesForRisk } from "@/lib/risk/sizing";
 import { stopChangeAllowed } from "@/lib/risk/stops";
 import type { RiskState, Side } from "@/lib/risk/types";
-import { evaluateCryptoMomentum, type CryptoProposal } from "@/lib/strategy/crypto-momentum";
+import { evaluateCryptoDiscount, type CryptoProposal } from "@/lib/strategy/crypto-discount";
 import {
   evaluateIntradayMomentum,
   MOMENTUM_SETUP,
@@ -29,12 +30,14 @@ import {
   cancelPaperOrder,
   getPaperOrder,
   getPaperOrderByClientId,
+  paperPositionQty,
   placePaperBracket,
   placePaperCryptoLimit,
   placePaperCryptoStop,
   placePaperStockLimit,
   placePaperStockStop,
   replacePaperStop,
+  sellPaperShares,
   sellPaperSharesOnce,
   syncAlpacaPaper,
 } from "@/server/alpaca";
@@ -44,6 +47,7 @@ const HEARTBEAT_PATH = path.join(process.cwd(), "data", "heartbeat.json");
 const FONZO_HEARTBEAT_PATH = path.join(process.cwd(), "data", "fonzo-heartbeat.json");
 let lastStockFetch = 0;
 let lastCryptoFetch = 0;
+let nextCryptoHourAt = 0;
 let lastHoldingFetch = 0;
 let lastHeartbeatEvent = 0;
 let lastFonzoHeartbeatEvent = 0;
@@ -123,7 +127,7 @@ async function ingestSymbol(
   accountId: string,
   brokerSymbol: string,
   yahooSymbol: string,
-  interval: "1m" | "1d",
+  interval: "1m" | "1h" | "1d",
   range: string,
   all = false,
 ) {
@@ -235,6 +239,22 @@ async function refreshAssets(accountId: string, assets: Asset[], hot: boolean, n
         // A missed quote must not become an order, and it must not throw the loop.
       }
     }
+  }
+}
+
+/** Eight-hour structure needs weeks of hourly bars. This does not run on the 20-second poll. */
+async function refreshCryptoHours(accountId: string, now: Date) {
+  if (now.getTime() < nextCryptoHourAt) return;
+  try {
+    for (const asset of CRYPTO_ASSETS) {
+      const count = await prisma.marketBar.count({ where: { accountId, symbol: asset.symbol, timeframe: "1h" } });
+      const backfill = count < 200;
+      await ingestSymbol(accountId, asset.symbol, asset.yahoo, "1h", backfill ? "3mo" : "5d", backfill);
+    }
+    nextCryptoHourAt = now.getTime() + 60 * 60_000;
+  } catch (error) {
+    nextCryptoHourAt = now.getTime() + 5 * 60_000;
+    throw error;
   }
 }
 
@@ -509,7 +529,7 @@ async function manageOpenTrades(accountId: string, now: Date, symbols: readonly 
         exit = { price: stop, purpose: "STOP" };
         break;
       }
-      if (trade.setup !== "CRYPTO_LAST_HALF" && bar.high >= trade.targetPrice) {
+      if (!isSessionExitSetup(trade.setup) && bar.high >= trade.targetPrice) {
         exit = { price: trade.targetPrice, purpose: "TARGET" };
         break;
       }
@@ -538,13 +558,15 @@ export async function flattenAgentTrades(
   accountId: string,
   now = new Date(),
   purpose = "FLATTEN",
-  options?: { exceptSetup?: string; exceptSetups?: string[]; symbols?: string[] },
+  options?: { exceptSetup?: string; exceptSetups?: string[]; onlySetups?: string[]; symbols?: string[] },
 ) {
   const open = await prisma.trade.findMany({ where: { accountId, status: "OPEN", origin: "ENGINE" } });
   const allowed = options?.symbols ? new Set(options.symbols) : null;
+  const only = options?.onlySetups ? new Set(options.onlySetups) : null;
   const kept = new Set([...(options?.exceptSetup ? [options.exceptSetup] : []), ...(options?.exceptSetups ?? [])]);
   const targets = open.filter((trade) => {
     if (allowed && !allowed.has(trade.symbol)) return false;
+    if (only && !only.has(trade.setup)) return false;
     if (kept.has(trade.setup)) return false;
     return true;
   });
@@ -618,7 +640,16 @@ export async function flattenAgentTrades(
         closed.push(trade.symbol);
         continue;
       }
-      const sold = await sellPaperSharesOnce(trade.symbol, trade.quantity, `flat-${trade.id}`.slice(0, 48));
+      let sold;
+      try {
+        sold =
+          asset?.market === "crypto"
+            ? await sellCryptoQty(trade.symbol, trade.quantity, `flat-${trade.id}`.slice(0, 48))
+            : await sellPaperSharesOnce(trade.symbol, trade.quantity, `flat-${trade.id}`.slice(0, 48));
+      } catch (error) {
+        await logEvent(accountId, "BROKER", error instanceof Error ? error.message : `${trade.symbol} flatten was not accepted.`, "warn");
+        continue;
+      }
       if (asset?.market === "crypto" && sold.status !== "filled") {
         await logEvent(accountId, "BROKER", `${trade.symbol} flatten was not filled. It will retry.`, "warn");
         continue;
@@ -775,7 +806,7 @@ async function executeProposal(
       });
       const exitLine =
         asset.market === "crypto"
-          ? "Exit is 24:00 UTC."
+          ? "The stop is sent when this buy fills. Fonzo sells the target."
           : fractionalStock
             ? "The stop is sent when this buy fills. Uriel sells the target."
             : "Exit is the target, the stop, or the cash close.";
@@ -1205,6 +1236,7 @@ async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly s
 
   await ensureStockStops(accountId, symbols);
   await exitFractionalTargets(accountId, now, symbols);
+  await exitCryptoPrices(accountId, now, symbols);
 
   const open = await prisma.trade.findMany({
     where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
@@ -1212,13 +1244,19 @@ async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly s
   const clock = sessionClock(now);
   for (const trade of open) {
     if (isSessionExitSetup(trade.setup)) continue;
+    const crypto = assetBySymbol(trade.symbol)?.market === "crypto";
     const bars = await prisma.marketBar.findMany({
-      where: { accountId, symbol: trade.symbol, timeframe: "1m", ts: { gte: new Date(`${clock.dateKey}T00:00:00Z`) } },
+      where: {
+        accountId,
+        symbol: trade.symbol,
+        timeframe: "1m",
+        ts: { gte: crypto ? trade.openedAt : new Date(`${clock.dateKey}T00:00:00Z`) },
+      },
       orderBy: { ts: "asc" },
     });
     let stop = trade.stopPrice;
     for (const bar of bars) {
-      if (bar.ts < trade.openedAt || etParts(bar.ts).dateKey !== clock.dateKey) continue;
+      if (bar.ts < trade.openedAt || (!crypto && etParts(bar.ts).dateKey !== clock.dateKey)) continue;
       const oneR = trade.entryPrice + (trade.entryPrice - trade.initialStopPrice);
       if (bar.high < oneR) continue;
       const change = stopChangeAllowed("LONG", trade.entryPrice, stop, trade.entryPrice);
@@ -1236,39 +1274,176 @@ async function reconcileAlpaca(accountId: string, now: Date, symbols: readonly s
   }
 }
 
+async function cryptoBrokerQty(symbol: string, requested: number) {
+  try {
+    return sellableQty(requested, await paperPositionQty(symbol));
+  } catch {
+    return sellableQty(requested, null);
+  }
+}
+
+/** A rejected or expired crypto order must not block the next sell. A fill we already sent is reused. */
+async function sellCryptoQty(symbol: string, requested: number, clientOrderId: string) {
+  try {
+    const existing = await getPaperOrderByClientId(clientOrderId);
+    if (existing.id && !CLOSED_ORDER.has(existing.status)) return existing;
+  } catch (error) {
+    if (!missingBrokerOrder(error)) throw error;
+  }
+  const attempt = async (quantity: number, id: string) => sellPaperShares(symbol, quantity, id);
+  const qty = await cryptoBrokerQty(symbol, requested);
+  if (!(qty > 0)) throw new Error(`No ${symbol} balance is available to sell.`);
+  try {
+    return await attempt(qty, clientOrderId);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (!missingBrokerOrder(error)) {
+      try {
+        const existing = await getPaperOrderByClientId(clientOrderId);
+        if (existing.id && existing.status === "filled") return existing;
+      } catch {
+        // The balance error still decides the smaller retry.
+      }
+    }
+    const smaller = sellableQty(requested, availableFromBalanceError(message));
+    if (!(smaller > 0) || smaller + 1e-12 >= qty) throw error;
+    return attempt(smaller, `${clientOrderId}-r`.slice(0, 48));
+  }
+}
+
+async function recordCryptoStop(accountId: string, trade: Trade, quantity: number, brokerOrderId: string) {
+  await prisma.order.create({
+    data: {
+      accountId,
+      tradeId: trade.id,
+      symbol: trade.symbol,
+      side: "SELL",
+      type: "STOP",
+      purpose: "STOP",
+      quantity,
+      stopPrice: trade.stopPrice,
+      status: "WORKING",
+      brokerOrderId,
+    },
+  });
+  await logEvent(accountId, "STOP", `Stop working at ${trade.stopPrice.toFixed(2)} on ${formatQty(quantity)} ${trade.symbol}.`);
+}
+
 async function ensureCryptoStops(accountId: string) {
   const trades = await prisma.trade.findMany({
     where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...CRYPTO_SYMBOLS] } },
   });
   for (const trade of trades) {
+    if (trade.setup === "CRYPTO_LAST_HALF") continue;
     const existing = await prisma.order.findFirst({
       where: { tradeId: trade.id, purpose: "STOP", status: "WORKING" },
     });
     if (existing) continue;
+    const exiting = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "TARGET", status: { in: ["WORKING", "FILLED"] } },
+    });
+    if (exiting) continue;
+    const quantity = await cryptoBrokerQty(trade.symbol, trade.quantity);
+    if (!(quantity > 0)) {
+      await logEvent(accountId, "BROKER", `No ${trade.symbol} balance is available for the stop.`, "warn");
+      continue;
+    }
     try {
       const placed = await placePaperCryptoStop({
         symbol: trade.symbol,
-        quantity: trade.quantity,
+        quantity,
         stopPrice: trade.stopPrice,
         clientOrderId: `fonzo-stop-${trade.id}`.slice(0, 48),
       });
+      await recordCryptoStop(accountId, trade, quantity, placed.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      const smaller = sellableQty(trade.quantity, availableFromBalanceError(message));
+      if (!(smaller > 0) || smaller + 1e-12 >= quantity) {
+        await logEvent(accountId, "BROKER", message || "Crypto stop was not accepted.", "warn");
+        continue;
+      }
+      try {
+        const placed = await placePaperCryptoStop({
+          symbol: trade.symbol,
+          quantity: smaller,
+          stopPrice: trade.stopPrice,
+          clientOrderId: `fonzo-stop-${trade.id}-${Date.now()}`.slice(0, 48),
+        });
+        await recordCryptoStop(accountId, trade, smaller, placed.id);
+      } catch (retryError) {
+        await logEvent(accountId, "BROKER", retryError instanceof Error ? retryError.message : "Crypto stop was not accepted.", "warn");
+      }
+    }
+  }
+}
+
+/** Price exits retry on later polls. A clock does not own them. The stop wins on the same bar. */
+async function exitCryptoPrices(accountId: string, now: Date, symbols: readonly string[]) {
+  const trades = await prisma.trade.findMany({
+    where: { accountId, status: "OPEN", origin: "ENGINE", symbol: { in: [...symbols] } },
+  });
+  for (const trade of trades) {
+    const asset = assetBySymbol(trade.symbol);
+    if (!asset || asset.market !== "crypto" || trade.setup === "CRYPTO_LAST_HALF" || isSessionExitSetup(trade.setup)) continue;
+    const pending = await prisma.order.findFirst({
+      where: { tradeId: trade.id, purpose: "TARGET", status: { in: ["WORKING", "FILLED"] } },
+    });
+    if (pending?.status === "FILLED") {
+      await closeTrade(trade, pending.fillPrice ?? trade.targetPrice, "TARGET", now, { recordExitOrder: false });
+      continue;
+    }
+    if (pending) continue;
+    const bars = await prisma.marketBar.findMany({
+      where: { accountId, symbol: trade.symbol, timeframe: "1m", ts: { gte: trade.openedAt } },
+      orderBy: { ts: "asc" },
+    });
+    const choice = fractionalExitChoice({
+      openedAt: trade.openedAt.getTime(),
+      stop: trade.stopPrice,
+      target: trade.targetPrice,
+      bars: bars.map((bar) => ({ ts: bar.ts.getTime(), high: bar.high, low: bar.low })),
+    });
+    if (choice === "hold") continue;
+    if (choice === "stop") {
+      const workingStop = await prisma.order.findFirst({
+        where: { tradeId: trade.id, purpose: "STOP", status: "WORKING" },
+      });
+      if (workingStop) continue;
+    }
+    if (choice === "target") {
+      const stopState = await cancelWorkingStop(accountId, trade.id);
+      if (stopState !== "clear") continue;
+    }
+    const purpose = choice === "stop" ? "STOP" : "TARGET";
+    const clientOrderId = `${purpose === "STOP" ? "fonzo-stop-sell" : "fonzo-exit"}-${trade.id}`.slice(0, 48);
+    try {
+      const sold = await sellCryptoQty(trade.symbol, trade.quantity, clientOrderId);
+      const fill = roundPrice(Number(sold.filled_avg_price ?? (purpose === "STOP" ? trade.stopPrice : trade.targetPrice)));
+      if (sold.status !== "filled") {
+        await logEvent(accountId, "BROKER", `${trade.symbol} ${purpose.toLowerCase()} sell was not filled. It will retry.`, "warn");
+        continue;
+      }
       await prisma.order.create({
         data: {
           accountId,
           tradeId: trade.id,
           symbol: trade.symbol,
           side: "SELL",
-          type: "STOP",
-          purpose: "STOP",
+          type: "MARKET",
+          purpose,
           quantity: trade.quantity,
-          stopPrice: trade.stopPrice,
-          status: "WORKING",
-          brokerOrderId: placed.id,
+          limitPrice: purpose === "TARGET" ? trade.targetPrice : null,
+          stopPrice: purpose === "STOP" ? trade.stopPrice : null,
+          fillPrice: fill,
+          status: "FILLED",
+          brokerOrderId: sold.id,
+          filledAt: now,
         },
       });
-      await logEvent(accountId, "STOP", `Stop working at ${trade.stopPrice.toFixed(2)} on ${formatQty(trade.quantity)} ${trade.symbol}.`);
+      await closeTrade(trade, fill, purpose, now, { recordExitOrder: false });
     } catch (error) {
-      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Crypto stop was not accepted.", "warn");
+      await logEvent(accountId, "BROKER", error instanceof Error ? error.message : "Crypto exit was not accepted.", "warn");
     }
   }
 }
@@ -1276,6 +1451,21 @@ async function ensureCryptoStops(accountId: string) {
 export async function alignAlpaca(accountId: string, now = new Date()) {
   await reconcileAlpaca(accountId, now, [...STOCK_SYMBOLS, ...CRYPTO_SYMBOLS]);
   await syncAlpacaPaper(accountId, now);
+}
+
+async function hourlyBars(accountId: string, symbol: string) {
+  const stored = await prisma.marketBar.findMany({
+    where: { accountId, symbol, timeframe: "1h" },
+    orderBy: { ts: "asc" },
+  });
+  return stored.map((bar) => ({
+    ts: bar.ts.getTime(),
+    open: bar.open,
+    high: bar.high,
+    low: bar.low,
+    close: bar.close,
+    volume: bar.volume,
+  }));
 }
 
 async function todayBars(accountId: string, symbol: string, dateKey: string, market: "nyse" | "crypto") {
@@ -1372,14 +1562,14 @@ async function considerStock(
 async function considerCrypto(account: Account, asset: Asset, equityCents: number, now: Date, mark: number) {
   const utc = utcParts(now);
   const session = await ensureSession(account.id, utc.dateKey, asset.symbol);
-  const bars = await todayBars(account.id, asset.symbol, utc.dateKey, "crypto");
+  const bars = await hourlyBars(account.id, asset.symbol);
   const pendingEntry = await prisma.order.count({
     where: { accountId: account.id, status: "WORKING", purpose: "ENTRY", symbol: asset.symbol },
   });
   const open = await prisma.trade.count({
     where: { accountId: account.id, status: "OPEN", origin: "ENGINE", symbol: asset.symbol },
   });
-  const view = evaluateCryptoMomentum({
+  const view = evaluateCryptoDiscount({
     now,
     bars,
     symbol: asset.symbol as "BTC/USD" | "ETH/USD",
@@ -1395,7 +1585,7 @@ async function considerCrypto(account: Account, asset: Asset, equityCents: numbe
   if (view.standDown && session.standDown !== view.standDown) {
     await logEvent(account.id, "STAND_DOWN", `${asset.symbol}: ${view.standDown}`);
   }
-  if (!view.proposal) return;
+  if (!view.proposal || view.state !== "ready") return;
   const freshSession = await prisma.strategySession.findUniqueOrThrow({ where: { id: session.id } });
   const freshAccount = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
   const paused = { ...freshAccount, agentPaused: freshAccount.fonzoPaused };
@@ -1551,9 +1741,21 @@ export async function tickFonzo(now = new Date()): Promise<{ ok: true; beat: Fon
   } catch (error) {
     await logEvent(account.id, "MARKET", error instanceof Error ? error.message : "Crypto quotes failed", "warn");
   }
+  try {
+    await refreshCryptoHours(account.id, now);
+  } catch (error) {
+    await logEvent(account.id, "MARKET", error instanceof Error ? error.message : "Crypto history failed", "warn");
+  }
   if (alpacaPaperConfigured()) {
     try {
       await reconcileAlpaca(account.id, now, CRYPTO_SYMBOLS);
+      const retired = await flattenAgentTrades(account.id, now, "FLATTEN", {
+        symbols: [...CRYPTO_SYMBOLS],
+        onlySetups: ["CRYPTO_LAST_HALF"],
+      });
+      if (retired.length > 0) {
+        await logEvent(account.id, "FLATTEN", `Retired crypto playbook. ${retired.join(" and ")} position sold.`);
+      }
       await ensureCryptoStops(account.id);
       await syncAlpacaPaper(account.id, now);
       account = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
@@ -1574,7 +1776,7 @@ export async function tickFonzo(now = new Date()): Promise<{ ok: true; beat: Fon
   await saveSleeve(account.id, equityCents, peakEquityCents, haltReason);
 
   if (account.mode !== "ALPACA_PAPER") await manageOpenTrades(account.id, now, CRYPTO_SYMBOLS);
-  if (haltReason || clock.flattenDue) {
+  if (haltReason) {
     const dateKey = utcParts(now).dateKey;
     const accountId = account.id;
     const sessions = await Promise.all(CRYPTO_SYMBOLS.map((symbol) => ensureSession(accountId, dateKey, symbol)));
@@ -1595,7 +1797,7 @@ export async function tickFonzo(now = new Date()): Promise<{ ok: true; beat: Fon
   }
 
   account = await prisma.account.findUniqueOrThrow({ where: { id: account.id } });
-  if (clock.entryWindowOpen && !account.fonzoPaused && !haltReason) {
+  if (!account.fonzoPaused && !haltReason) {
     for (const asset of CRYPTO_ASSETS) {
       const freshBook = await loadBook(account.id);
       const mark = freshBook.marks[asset.symbol];

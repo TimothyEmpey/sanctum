@@ -53,7 +53,11 @@ export default async function RiskPage({
           <CardTitle>Controls</CardTitle>
           <p className="mt-2 text-sm">{desk.haltReason ?? "No halt is active."}</p>
           <p className="mt-2 text-sm text-[var(--muted)]">
-            {desk.paused ? `${desk.workerName} is paused.` : `${desk.workerName} can take a new entry inside the window.`}
+            {desk.paused
+              ? `${desk.workerName} is paused.`
+              : desk.assetClass === "crypto"
+                ? `${desk.workerName} can take a new entry while he is running.`
+                : `${desk.workerName} can take a new entry inside the window.`}
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
             <form action={togglePause}>

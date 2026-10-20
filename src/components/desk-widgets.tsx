@@ -55,7 +55,7 @@ export function PositionBook({ desk, includeUntouchable = true }: { desk: Desk; 
   const baseline = desk.holdings.filter((holding) => holding.origin === "BASELINE" && holding.symbol === desk.symbol);
   const locked = desk.holdings.filter((holding) => holding.origin === "UNTOUCHABLE");
   const exitLine = (setup: string) =>
-    setup === MOMENTUM_SETUP ? "exit at the cash close" : setup === "CRYPTO_LAST_HALF" ? "exit at 24:00 UTC" : null;
+    setup === MOMENTUM_SETUP ? "exit at the cash close" : null;
   return (
     <div className="space-y-4">
       <Card>

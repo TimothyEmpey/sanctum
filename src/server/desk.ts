@@ -7,7 +7,7 @@ import { alpacaPaperConfigured, alpacaStatus } from "@/server/alpaca";
 import { prisma } from "@/server/db";
 import { robinhoodStatus } from "@/server/robinhood";
 import { alignAlpaca, readFonzoHeartbeat, readHeartbeat } from "@/server/trading";
-import { assetTriggerCaveat, loadDayMinutes, loadSignalMinutes, loadStructureMinutes } from "@/server/trigger-note";
+import { assetTriggerCaveat, loadDayMinutes, loadSignalMinutes, loadStructureHours, loadStructureMinutes } from "@/server/trigger-note";
 
 export type DeskQuery = { book?: string; asset?: string };
 
@@ -99,7 +99,9 @@ export async function getDesk(query?: DeskQuery) {
         ? await loadDayMinutes(account.id, "NQ", stockClock.dateKey)
         : asset.symbol === "SPY"
           ? await loadStructureMinutes(account.id, "SPY", stockClock.dateKey)
-          : await loadSignalMinutes(account.id, asset, now),
+          : asset.market === "crypto"
+            ? await loadStructureHours(account.id, asset.symbol)
+            : await loadSignalMinutes(account.id, asset, now),
     esMinutes: asset.symbol === "NQ" ? await loadDayMinutes(account.id, "ES", stockClock.dateKey) : [],
     daily: dailyBars.map((bar) => ({ ts: bar.ts.getTime(), close: bar.close, high: bar.high, low: bar.low })),
     traded,

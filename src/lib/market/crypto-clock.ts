@@ -19,36 +19,19 @@ export function utcParts(now: Date) {
   };
 }
 
-/** First half-hour ends at 00:30 UTC. Last half-hour starts at 23:30 UTC. */
-export const CRYPTO_SIGNAL_END = 30;
-export const CRYPTO_ENTRY_START = 23 * 60 + 30;
-export const CRYPTO_ENTRY_GRACE = 5;
-export const CRYPTO_FLATTEN_START = 23 * 60 + 59;
-
-const LABELS: Record<CryptoPhase, string> = {
-  signal: "Recording the first half-hour",
-  wait: "Waiting for the last half-hour",
-  entry: "Entry window",
-  manage: "Managing open risk",
-  flatten: "Flattening the session",
-};
-
+/**
+ * Crypto has no cash session. While Fonzo's process is running he can buy or sell.
+ * `fonzo stop` and `sanctum stop` are what take him offline. A clock does not flatten him.
+ */
 export function cryptoSessionClock(now: Date): CryptoClock {
   const z = utcParts(now);
-  const entryEnd = CRYPTO_ENTRY_START + CRYPTO_ENTRY_GRACE;
-  let phase: CryptoPhase = "wait";
-  if (z.minutes < CRYPTO_SIGNAL_END) phase = "signal";
-  else if (z.minutes < CRYPTO_ENTRY_START) phase = "wait";
-  else if (z.minutes < entryEnd) phase = "entry";
-  else if (z.minutes < CRYPTO_FLATTEN_START) phase = "manage";
-  else phase = "flatten";
   return {
-    phase,
+    phase: "manage",
     dateKey: z.dateKey,
     minutes: z.minutes,
-    entryWindowOpen: phase === "entry",
-    flattenDue: phase === "flatten",
-    label: LABELS[phase],
+    entryWindowOpen: true,
+    flattenDue: false,
+    label: "Crypto session",
   };
 }
 

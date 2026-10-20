@@ -1,3 +1,4 @@
+import { CRYPTO_SETUP } from "@/lib/strategy/crypto-discount";
 import { MOMENTUM_SETUP } from "@/lib/strategy/intraday-momentum";
 import { NQ_SETUP, NQ_STRATEGY_ID } from "@/lib/strategy/nq-sweep";
 import { SPY_SETUP, SPY_STRATEGY_ID, SPY_STRATEGY_NAME } from "@/lib/strategy/spy-structure";
@@ -63,13 +64,13 @@ export const BTC_ASSET: Asset = {
   desk: "fonzo",
   assetClass: "crypto",
   market: "crypto",
-  strategyId: "btc-intraday-momentum-2022",
-  strategyName: "BTC last half-hour, long-only",
-  setup: "CRYPTO_LAST_HALF",
+  strategyId: "btc-discount-range",
+  strategyName: "BTC discount range, long-only",
+  setup: CRYPTO_SETUP,
   wholeShares: false,
   quantityStep: 0.0001,
   playbook:
-    "Bitcoin follows the last-half-hour shape in Shen, Urquhart, and Zhu, Financial Review (2022). They found that the first half-hour predicts the last half-hour. Bitcoin has no cash open, so they used volume as the clock. Fonzo uses the UTC day as the session: the 00:00–00:30 UTC return is the signal, the buy is 23:30 UTC, and the sell is 24:00 UTC. A down or flat signal stays flat. Their economic gains were strongest in downturns and came from liquidity provision. This is the long-only UTC version of that clock, not a reproduction of the volume clock, and it is not a promised return. The stop is 2% under the entry.",
+    "Bitcoin is bought only in the discount of a broken range. A range is a swing low and a swing high. Fonzo reads the eight-hour chart. He waits for a close above that swing high, then for price to trade back inside the range and into the bottom quarter. The bottom quarter runs from the swing low to one quarter of the way up the range. The stop is the swing low. The target is the high of the range. If the eight-hour chart has no swing, Fonzo reads the four-hour chart, then the one-hour chart. The short setup is off. One entry a UTC day. The buy is a fraction of a coin, sized from 2% of the book and cut to this asset's 25% share. After price moves one times the risk, the stop moves to the entry. The position is out at the target or the stop.",
 };
 
 export const ETH_ASSET: Asset = {
@@ -78,13 +79,13 @@ export const ETH_ASSET: Asset = {
   desk: "fonzo",
   assetClass: "crypto",
   market: "crypto",
-  strategyId: "eth-intraday-momentum-2022",
-  strategyName: "ETH last half-hour, long-only",
-  setup: "CRYPTO_LAST_HALF",
+  strategyId: "eth-discount-range",
+  strategyName: "ETH discount range, long-only",
+  setup: CRYPTO_SETUP,
   wholeShares: false,
   quantityStep: 0.0001,
   playbook:
-    "Ethereum uses the same UTC clock as Bitcoin. Wen, Bouri, Xu, and Zhao, North American Journal of Economics and Finance (2022), found intraday return predictability in Ethereum as well as Bitcoin, Litecoin, and Ripple, from March 2013 through May 2020. A timing strategy in that sample beat buy-and-hold. Fonzo does not invent a separate ETH return. The signal is the 00:00–00:30 UTC return. If it is positive, Fonzo buys at 23:30 UTC and sells at 24:00 UTC. If it is not, Fonzo stays flat. The stop is 2% under the entry.",
+    "Ethereum uses the same discount range as Bitcoin. Fonzo does not invent a separate ETH entry. A close above the swing high, a return back inside the range, and a trade into the bottom quarter is the buy. The stop is the swing low and the target is the range high. The eight-hour chart is read first, then the four-hour, then the one-hour, and only when the higher chart has no swing. The short setup is off. One entry a UTC day. The buy is a fraction of a coin, sized from 2% of the book and cut to this asset's 25% share. The position is out at the target or the stop.",
 };
 
 export const ASSETS: Asset[] = [SPY_ASSET, NQ_ASSET, BTC_ASSET, ETH_ASSET];
@@ -125,7 +126,7 @@ export function assetLabel(asset: Asset) {
 }
 
 export function isSessionExitSetup(setup: string) {
-  return setup === MOMENTUM_SETUP || setup === "CRYPTO_LAST_HALF";
+  return setup === MOMENTUM_SETUP;
 }
 
 export function resolveView(book?: string | null, asset?: string | null) {
@@ -160,14 +161,14 @@ const STOCK_RULES = [
 const CRYPTO_RULES = [
   "Every trade has a stop before the entry is recorded.",
   "A stop can move closer. It cannot move farther away.",
-  "Size is floored from 2% of the $1,000 working book divided by the stop distance.",
+  "Size is floored from 2% of the $1,000 working book divided by the stop distance. The buy is a fraction of a coin. A whole coin is not required.",
   "SPY, NQ, BTC, and ETH are each designated 25% of account equity. An order cannot spend another asset share.",
   "No averaging down and no martingale. After a loss the next buy stays at or below that size.",
   "Two losses in a row locks out new entries for that coin for the UTC day.",
   "One entry a day for each coin. Fonzo counts its own 2 open positions and 4% open risk. Uriel's positions are not included.",
   "Daily loss, weekly loss, and peak drawdown each halt at 5% of the working book.",
   "Fonzo trades BTC and ETH. Uriel trades SPY and NQ. Anything else is untouchable.",
-  "The position is sold at 24:00 UTC. The stop is a disaster exit, not a profit target.",
+  "The position is out at the target or the stop. There is no clock exit.",
 ];
 
 export function rulesFor(asset: Asset) {

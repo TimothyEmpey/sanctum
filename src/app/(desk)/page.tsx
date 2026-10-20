@@ -13,10 +13,7 @@ export default async function DashboardPage({
 }) {
   const desk = await getDesk(await searchParams);
   if (!desk) return <p>Seed the paper account before opening the desk.</p>;
-  const quiet =
-    desk.assetClass === "crypto"
-      ? desk.clock.phase === "signal" || desk.clock.phase === "wait"
-      : desk.clock.phase === "closed" || desk.clock.phase === "idle";
+  const quiet = desk.assetClass === "crypto" ? false : desk.clock.phase === "closed" || desk.clock.phase === "idle";
   const workerFresh = heartbeatFresh(desk.heartbeat?.at, quiet);
 
   return (

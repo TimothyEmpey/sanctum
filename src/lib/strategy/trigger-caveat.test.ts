@@ -103,7 +103,7 @@ describe("trigger caveat", () => {
     expect(text).toBeNull();
   });
 
-  it("says crypto stayed flat when the first half-hour is not up", () => {
+  it("says crypto prices are missing until the range can be read", () => {
     const text = describeAssetTrigger({
       ...base,
       market: "crypto",
@@ -112,7 +112,7 @@ describe("trigger caveat", () => {
       priorClose: null,
       workerName: "Fonzo",
     });
-    expect(text).toBe("Playbook trigger was not hit.");
+    expect(text).toBe("Signal prices are missing. This is not a flat day.");
   });
 
   it("says the cash market is closed", () => {

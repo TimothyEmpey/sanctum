@@ -21,7 +21,7 @@ function positionLine(panel: {
   const trade = panel.openTrades[0];
   if (trade) {
     const exit =
-      trade.setup === MOMENTUM_SETUP ? "exit at the cash close" : trade.setup === "CRYPTO_LAST_HALF" ? "exit at 24:00 UTC" : `target ${formatPx(trade.targetPrice)}`;
+      trade.setup === MOMENTUM_SETUP ? "exit at the cash close" : `target ${formatPx(trade.targetPrice)}`;
     const extra = panel.openTrades.length > 1 ? ` · +${panel.openTrades.length - 1} more` : "";
     return `${trade.side} ${formatQty(trade.quantity)} · entry ${formatPx(trade.entryPrice)} · stop ${formatPx(trade.stopPrice)} · ${exit} · ${formatUsd(trade.unrealizedCents, true)}${extra}`;
   }
