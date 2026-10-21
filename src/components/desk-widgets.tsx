@@ -38,6 +38,30 @@ export function Metric({ label, value, hint, tone }: { label: string; value: str
   );
 }
 
+export function SplitMetric({ label, stocks, crypto }: { label: string; stocks: number; crypto: number }) {
+  return (
+    <Card>
+      <CardTitle>{label}</CardTitle>
+      <div className="mt-2 space-y-1">
+        <PnlLine label="Stocks" cents={stocks} />
+        <PnlLine label="Crypto" cents={crypto} />
+      </div>
+    </Card>
+  );
+}
+
+function PnlLine({ label, cents }: { label: string; cents: number }) {
+  const tone = moneyTone(cents);
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="text-xs text-[var(--muted)]">{label}</span>
+      <span className={`tabular text-lg font-semibold tracking-tight ${tone === "good" ? "text-[var(--positive)]" : tone === "bad" ? "text-[var(--negative)]" : ""}`}>
+        {formatUsd(cents, true)}
+      </span>
+    </div>
+  );
+}
+
 export function moneyTone(cents: number): "good" | "bad" | undefined {
   if (cents > 0) return "good";
   if (cents < 0) return "bad";

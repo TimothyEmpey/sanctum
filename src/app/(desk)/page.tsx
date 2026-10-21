@@ -1,5 +1,5 @@
 import { PriceChart } from "@/components/charts";
-import { BookBanner, Metric, moneyTone, PositionBook } from "@/components/desk-widgets";
+import { BookBanner, Metric, moneyTone, PositionBook, SplitMetric } from "@/components/desk-widgets";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardTitle } from "@/components/ui/card";
 import { formatPx, formatUsd } from "@/lib/market/time";
@@ -26,7 +26,7 @@ export default async function DashboardPage({
       <BookBanner mode={desk.mode} demo={desk.demo} brokerEquityCents={desk.brokerEquityCents} />
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Account equity" value={formatUsd(desk.equityCents)} hint={`Peak ${formatUsd(desk.peakEquityCents)}`} />
-        <Metric label="Today's P&L" value={formatUsd(desk.dayPnlCents, true)} tone={moneyTone(desk.dayPnlCents)} />
+        <SplitMetric label="Today's P&L" stocks={desk.stockDayPnlCents} crypto={desk.cryptoDayPnlCents} />
         <Metric label="Daily loss remaining" value={formatUsd(desk.dailyLossRemainingCents)} hint="5% of starting-day equity" />
         <Metric label="Open risk" value={formatUsd(desk.openRiskCents)} hint={`Cap ${formatUsd(desk.openRiskLimitCents)}`} />
         <Metric
@@ -44,7 +44,7 @@ export default async function DashboardPage({
           }
         />
         <Metric label="Active orders" value={String(desk.orders.filter((order) => order.status === "WORKING").length)} />
-        <Metric label="Week P&L" value={formatUsd(desk.weekPnlCents, true)} tone={moneyTone(desk.weekPnlCents)} />
+        <SplitMetric label="Week P&L" stocks={desk.stockWeekPnlCents} crypto={desk.cryptoWeekPnlCents} />
       </section>
       <section className="grid gap-4 lg:grid-cols-5">
         <Card className="min-w-0 lg:col-span-3">

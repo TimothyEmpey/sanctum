@@ -1,6 +1,8 @@
-import { assetLabel, assetShareCents, normalizeSymbol, resolveView, rulesFor, sameDesk, type Asset } from "@/lib/assets";
+import { assetBySymbol, assetLabel, assetShareCents, normalizeSymbol, resolveView, rulesFor, sameDesk, type Asset } from "@/lib/assets";
 import { sessionClock } from "@/lib/market/calendar";
 import { cryptoSessionClock, utcParts } from "@/lib/market/crypto-clock";
+import { etInstant } from "@/lib/market/time";
+import { splitPnl, type SplitTrade } from "@/lib/portfolio/pnl";
 import { RISK_LIMITS } from "@/lib/risk/constants";
 import { deployedNotionalCents, riskBudgetCents } from "@/lib/risk/sizing";
 import { alpacaPaperConfigured, alpacaStatus } from "@/server/alpaca";
@@ -15,6 +17,83 @@ function proposalSymbol(proposal: unknown) {
   if (!proposal || typeof proposal !== "object" || !("symbol" in proposal)) return null;
   const symbol = (proposal as { symbol?: unknown }).symbol;
   return typeof symbol === "string" ? normalizeSymbol(symbol) : null;
+}
+
+function bookWindow(dateKey: string | null) {
+  return dateKey ? etInstant(dateKey, 9, 25) : null;
+}
+
+async function priceAt(accountId: string, symbol: string, at: Date) {
+  const bar = await prisma.marketBar.findFirst({
+    where: { accountId, symbol, timeframe: "1m", ts: { lte: at } },
+    orderBy: { ts: "desc" },
+    select: { close: true },
+  });
+  return bar?.close ?? null;
+}
+
+async function latestPrice(accountId: string, symbol: string) {
+  const bar = await prisma.marketBar.findFirst({
+    where: { accountId, symbol },
+    orderBy: { ts: "desc" },
+    select: { close: true },
+  });
+  return bar?.close ?? null;
+}
+
+async function splitTrades(
+  accountId: string,
+  trades: {
+    symbol: string;
+    side: string;
+    quantity: number;
+    entryPrice: number;
+    exitPrice: number | null;
+    realizedPnlCents: number;
+    status: string;
+    origin: string;
+    openedAt: Date;
+    closedAt: Date | null;
+  }[],
+  window: Date | null,
+  resetAt: Date | null,
+) {
+  const startMs = window?.getTime() ?? Number.POSITIVE_INFINITY;
+  const marks = new Map<string, number | null>();
+  const starts = new Map<string, number | null>();
+  const rows: SplitTrade[] = [];
+  for (const trade of trades) {
+    const asset = assetBySymbol(trade.symbol);
+    if (!asset || trade.origin !== "ENGINE") continue;
+    if (resetAt && trade.openedAt < resetAt) continue;
+    const open = trade.status === "OPEN";
+    let mark: number | null = null;
+    if (open) {
+      if (!marks.has(trade.symbol)) marks.set(trade.symbol, await latestPrice(accountId, trade.symbol));
+      mark = marks.get(trade.symbol) ?? null;
+    }
+    let markAtStart: number | null = null;
+    const spans = window != null && trade.openedAt.getTime() < startMs && (open || (trade.closedAt != null && trade.closedAt.getTime() >= startMs));
+    if (spans) {
+      if (!starts.has(trade.symbol)) starts.set(trade.symbol, await priceAt(accountId, trade.symbol, window));
+      markAtStart = starts.get(trade.symbol) ?? null;
+    }
+    rows.push({
+      assetClass: asset.assetClass,
+      origin: trade.origin,
+      status: trade.status,
+      side: trade.side === "SHORT" ? "SHORT" : "LONG",
+      quantity: trade.quantity,
+      entryPrice: trade.entryPrice,
+      exitPrice: trade.exitPrice,
+      realizedPnlCents: trade.realizedPnlCents,
+      openedAtMs: trade.openedAt.getTime(),
+      closedAtMs: trade.closedAt?.getTime() ?? null,
+      mark,
+      markAtStart,
+    });
+  }
+  return splitPnl(rows, startMs);
 }
 
 function eventForAsset(message: string, kind: string, asset: Asset) {
@@ -78,6 +157,10 @@ export async function getDesk(query?: DeskQuery) {
   const mark = latestBar?.close ?? (asset.symbol === "SPY" ? stockBeat?.spy ?? null : null) ?? null;
   const dayPnlCents = account.equityCents - account.dayStartEquityCents;
   const weekPnlCents = account.equityCents - account.weekStartEquityCents;
+  const [daySplit, weekSplit] = await Promise.all([
+    splitTrades(account.id, account.trades, bookWindow(account.dayStartDate), resetAt),
+    splitTrades(account.id, account.trades, bookWindow(account.weekStartDate), resetAt),
+  ]);
   const engineOpen = account.trades.filter((trade) => trade.status === "OPEN" && trade.origin === "ENGINE");
   const deskOpen = engineOpen.filter((trade) => sameDesk(asset.symbol, trade.symbol));
   const openRiskCents = deskOpen.reduce(
@@ -153,6 +236,10 @@ export async function getDesk(query?: DeskQuery) {
     peakEquityCents: account.peakEquityCents,
     dayPnlCents,
     weekPnlCents,
+    stockDayPnlCents: daySplit.stocks,
+    cryptoDayPnlCents: daySplit.crypto,
+    stockWeekPnlCents: weekSplit.stocks,
+    cryptoWeekPnlCents: weekSplit.crypto,
     dailyLossRemainingCents: riskBudgetCents(account.dayStartEquityCents, RISK_LIMITS.maxDailyLoss) + dayPnlCents,
     weeklyLossRemainingCents: riskBudgetCents(account.weekStartEquityCents, RISK_LIMITS.maxWeeklyLoss) + weekPnlCents,
     drawdown: account.peakEquityCents > 0 ? (account.peakEquityCents - account.equityCents) / account.peakEquityCents : 0,
