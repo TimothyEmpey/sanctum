@@ -62,7 +62,7 @@ export function EquityChart({ points }: { points: { t: number; equityCents: numb
 }
 
 type Ohlc = { t: number; open: number; high: number; low: number; close: number; volume: number };
-type CandleFrame = "1D" | "5m";
+type CandleFrame = "1D" | "5m" | "1m";
 
 function formatVol(volume: number) {
   if (volume >= 1_000_000_000) return `${(volume / 1_000_000_000).toFixed(1)}B`;
@@ -90,9 +90,12 @@ export function PriceChart({
   fit?: boolean;
 }) {
   const intraday = useMemo(() => fiveMinuteCandles(minute), [minute]);
-  const [frame, setFrame] = useState<CandleFrame>(intraday.length >= 2 ? "5m" : "1D");
+  const [frame, setFrame] = useState<CandleFrame>("1m");
   const [hover, setHover] = useState<number | null>(null);
-  const points = frame === "5m" ? intraday : daily;
+  const [minuteOffset, setMinuteOffset] = useState(0);
+  const offset = Math.min(minuteOffset, Math.max(0, minute.length - 60));
+  const minuteEnd = minute.length - offset;
+  const points = frame === "1m" ? minute.slice(Math.max(0, minuteEnd - 60), minuteEnd) : frame === "5m" ? intraday : daily;
   const active = hover == null ? points.at(-1) : points[hover];
   const prior = hover == null ? points.at(-2) : points[Math.max(0, hover - 1)];
   const change = active && prior && active !== prior ? active.close - prior.close : 0;
@@ -102,8 +105,8 @@ export function PriceChart({
     <div className={fit ? "flex h-full min-h-0 flex-col" : undefined}>
       <div className={fit ? "mb-1 flex shrink-0 items-center justify-between gap-2" : "mb-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1"}>
         <div className="flex shrink-0 gap-1">
-          {(["5m", "1D"] as const).map((item) => (
-            <Button key={item} type="button" size="sm" variant={item === frame ? "default" : "outline"} className={fit ? "h-7 px-2" : undefined} onClick={() => { setFrame(item); setHover(null); }}>
+          {(["1m", "5m", "1D"] as const).map((item) => (
+            <Button key={item} type="button" size="sm" variant={item === frame ? "default" : "outline"} className={fit ? "h-7 px-2" : undefined} onClick={() => { setFrame(item); setHover(null); setMinuteOffset(0); }}>
               {item}
             </Button>
           ))}
@@ -118,9 +121,19 @@ export function PriceChart({
           </p>
         ) : null}
       </div>
+      {frame === "1m" && minute.length > 60 ? (
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-[var(--muted)]">
+          <span>{offset === 0 ? "Latest" : "Earlier"} {points.length} one-minute candles</span>
+          <div className="flex gap-1">
+            <Button type="button" size="sm" variant="outline" disabled={minuteEnd <= 60} onClick={() => { setMinuteOffset(Math.min(offset + 30, minute.length - 60)); setHover(null); }}>Earlier</Button>
+            <Button type="button" size="sm" variant="outline" disabled={offset === 0} onClick={() => { setMinuteOffset(Math.max(0, offset - 30)); setHover(null); }}>Later</Button>
+            <Button type="button" size="sm" variant="outline" disabled={offset === 0} onClick={() => { setMinuteOffset(0); setHover(null); }}>Latest</Button>
+          </div>
+        </div>
+      ) : null}
       {points.length < 2 ? (
         <p className="text-sm text-[var(--muted)]">
-          {frame === "5m"
+          {frame === "1m" ? `One-minute candles for ${symbol} appear when a replay or feed is loaded.` : frame === "5m"
             ? `Five-minute candles for ${symbol} print once that history is stored.`
             : `Daily candles for ${symbol} show up once that history is stored.`}
         </p>

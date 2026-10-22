@@ -186,3 +186,11 @@ model MarketBar {
 
   @@unique([accountId, symbol, ts, timeframe])
 }
+
+model FuturesRun {
+  id String @id
+  configJson String
+  stateJson String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

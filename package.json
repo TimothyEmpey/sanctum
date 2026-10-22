@@ -13,9 +13,12 @@
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
-    "worker": "tsx --tsconfig tsconfig.json src/worker.ts",
+    "worker": "node --import tsx src/worker.ts",
     "db:up": "bash scripts/postgres.sh",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "replay": "node --import tsx scripts/replay.ts",
+    "typecheck": "tsc --noEmit",
+    "db:generate": "prisma generate"
   },
   "prisma": {
     "seed": "tsx --tsconfig tsconfig.json prisma/seed.ts"
@@ -38,7 +41,7 @@
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
-    "@types/node": "^20",
+    "@types/node": "^24",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
@@ -47,6 +50,10 @@
     "tailwindcss": "^4",
     "tsx": "^4.23.15",
     "typescript": "^5",
-    "vitest": "^3.2.7"
+    "vitest": "5.0.5"
+  },
+  "overrides": {
+    "deepmerge-ts": "8.0.2",
+    "postcss": "8.5.31"
   }
 }

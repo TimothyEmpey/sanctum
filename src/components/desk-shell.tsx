@@ -3,12 +3,9 @@
 import Link from "next/link";
 import { usePathname, useSearchParams } from "next/navigation";
 import type { ReactNode } from "react";
-import { signOutDesk } from "@/app/actions";
 import { LiveRefresh } from "@/components/live-refresh";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Button } from "@/components/ui/button";
 import { UrielMark } from "@/components/uriel-mark";
-import { assetLabel, CRYPTO_ASSETS, resolveView, STOCK_ASSETS, viewQuery } from "@/lib/assets";
 import { cn } from "@/lib/utils";
 
 const links = [
@@ -20,42 +17,20 @@ const links = [
   { href: "/floor", label: "Floor" },
 ];
 
-export function DeskShell({
-  children,
-  halt,
-  urielPaused,
-  fonzoPaused,
-  stockLive,
-}: {
-  children: ReactNode;
-  halt: boolean;
-  urielPaused: boolean;
-  fonzoPaused: boolean;
-  stockLive: boolean;
-}) {
-  const pathname = usePathname();
-  const params = useSearchParams();
-  const view = resolveView(params.get("book"), params.get("asset"));
-  const book = view.assetClass;
-  const query = viewQuery(view.asset);
-  const tone = halt ? "halted" : book === "crypto" ? (fonzoPaused ? "paused" : "live") : urielPaused ? "paused" : stockLive ? "live" : "idle";
-  const title = book === "crypto" ? "Fonzo" : "Uriel";
-  const assets = book === "crypto" ? CRYPTO_ASSETS : STOCK_ASSETS;
-  const withQuery = (href: string) => (href === "/" ? `/?${query}` : `${href}?${query}`);
-  const classHref = (next: "stocks" | "crypto") => {
-    if (next === book) return withQuery(pathname);
-    const asset = next === "crypto" ? CRYPTO_ASSETS[0] : STOCK_ASSETS[0];
-    return `${pathname}?${viewQuery(asset)}`;
-  };
-
+export function DeskShell({children,halt,urielPaused,sessionActive=false,accountControl}:{children:ReactNode;halt:boolean;urielPaused:boolean;sessionActive?:boolean;accountControl?:ReactNode}) {
+  const pathname=usePathname(),params=useSearchParams();
+  const asset=params.get("asset")==="ES"?"ES":"NQ";
+  const query=`asset=${asset}`;
+  const tone=halt?"halted":urielPaused?"paused":sessionActive?"live":"idle";
+  const withQuery=(href:string)=>`${href}?${query}`;
   return (
     <>
       <LiveRefresh />
-      <UrielMark tone={tone} pet={book === "crypto" ? "fonzo" : "uriel"} />
+      <UrielMark tone={tone} pet="uriel" />
       <div className="mx-auto min-h-screen max-w-6xl px-4 pb-24 pt-5 md:pb-10 md:pt-6">
         <header className="mb-4 flex items-center justify-between gap-3 pr-28 sm:pr-36">
           <Link href={`/?${query}`} className="text-lg font-semibold tracking-tight">
-            {title}
+            Uriel
           </Link>
           <nav className="hidden items-center gap-1 md:flex">
             {links.map((link) => {
@@ -76,25 +51,14 @@ export function DeskShell({
           </nav>
           <div className="flex items-center gap-2">
             <ThemeToggle />
-            <form action={signOutDesk}>
-              <Button type="submit" variant="ghost" size="sm">
-                Sign out
-              </Button>
-            </form>
+            {accountControl}
           </div>
         </header>
         <div className="mb-6 flex flex-wrap items-center gap-2 pr-28 sm:pr-36">
-          <Link href={classHref("stocks")} className={chip(book === "stocks")}>
-            Stocks
-          </Link>
-          <Link href={classHref("crypto")} className={chip(book === "crypto")}>
-            Crypto
-          </Link>
+          <span className="text-sm text-[var(--muted)]">Futures</span>
           <span className="px-1 text-[var(--muted)]">/</span>
-          {assets.map((asset) => (
-            <Link key={asset.symbol} href={`${pathname}?${viewQuery(asset)}`} className={chip(view.asset.symbol === asset.symbol)}>
-              {assetLabel(asset)}
-            </Link>
+          {(["NQ","ES"] as const).map(symbol=>(
+            <Link key={symbol} href={`${pathname}?asset=${symbol}`} className={chip(asset===symbol)}>{symbol}1!</Link>
           ))}
         </div>
         {children}

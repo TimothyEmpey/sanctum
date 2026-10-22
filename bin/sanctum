@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sanctum commands control Uriel and Fonzo together.
+# Sanctum remains an alias for the single NQ/ES Uriel worker.
 set -euo pipefail
 source="${BASH_SOURCE[0]}"
 while [ -L "$source" ]; do

@@ -149,10 +149,9 @@ command_name="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')"
 desk="$(printf '%s' "${SANCTUM_DESK:-uriel}" | tr '[:upper:]' '[:lower:]')"
 if [[ "$command_name" == "start" ]]; then
   case "$desk" in
-    fonzo) start_fonzo ;;
+    fonzo) echo "Fonzo is retired. Use uriel start for the NQ/ES simulator."; exit 1 ;;
     sanctum)
       start_worker
-      start_fonzo
       ;;
     *) start_worker ;;
   esac
@@ -186,4 +185,4 @@ if [[ "$command_name" == "end" || "$command_name" == "stop" ]]; then
   exit 0
 fi
 
-exec "$root/node_modules/.bin/tsx" --tsconfig "$root/tsconfig.json" "$root/src/cli.ts" "$@"
+exec "$root/node_modules/.bin/tsx" --tsconfig "$root/tsconfig.json" "$root/scripts/futures-cli.ts" "$@"
